@@ -9,13 +9,13 @@ using Verse.AI;
 namespace BetterRimAI
 {
     /// <summary>
-    /// RimWorld 1.6 JobGiver_Work validates scanner candidates through HasJobOnThing/HasJobOnCell
-    /// before it asks the scanner to build the final Job. A target that our runtime path guard has
-    /// already proven unsafe must fail here, so vanilla simply continues scanning other targets and
-    /// other WorkGivers instead of starting/cancelling the same job in a tight loop.
+    /// RimWorld 1.6 JobGiver_Work calls HasJobOnThing while its internal Validator is deciding
+    /// whether a scanner candidate may participate in the best-target search. If the runtime path
+    /// guard has already proved a Thing unsafe, reject it here. Vanilla then keeps scanning instead
+    /// of starting and cancelling the same hauling job over and over.
     /// </summary>
     [HarmonyPatch]
-    public static class ThreatAwareBlockedCandidatePatch
+    public static class ThreatAwareBlockedThingCandidatePatch
     {
         [HarmonyTargetMethods]
         public static IEnumerable<MethodBase> TargetMethods()
@@ -28,54 +28,52 @@ namespace BetterRimAI
                 if (type == null || type.IsAbstract || !scannerType.IsAssignableFrom(type))
                     continue;
 
-                Add(type, nameof(WorkGiver_Scanner.HasJobOnThing),
-                    new[] { typeof(Pawn), typeof(Thing), typeof(bool) }, seen, out MethodInfo thing);
-                if (thing != null) yield return thing;
+                MethodInfo method = AccessTools.DeclaredMethod(type,
+                    nameof(WorkGiver_Scanner.HasJobOnThing),
+                    new[] { typeof(Pawn), typeof(Thing), typeof(bool) });
 
-                Add(type, nameof(WorkGiver_Scanner.HasJobOnCell),
-                    new[] { typeof(Pawn), typeof(IntVec3), typeof(bool) }, seen, out MethodInfo cell);
-                if (cell != null) yield return cell;
+                if (method != null && method.ReturnType == typeof(bool) && seen.Add(method))
+                    yield return method;
             }
 
-            Add(scannerType, nameof(WorkGiver_Scanner.HasJobOnThing),
-                new[] { typeof(Pawn), typeof(Thing), typeof(bool) }, seen, out MethodInfo baseThing);
-            if (baseThing != null) yield return baseThing;
+            MethodInfo baseMethod = AccessTools.DeclaredMethod(scannerType,
+                nameof(WorkGiver_Scanner.HasJobOnThing),
+                new[] { typeof(Pawn), typeof(Thing), typeof(bool) });
 
-            Add(scannerType, nameof(WorkGiver_Scanner.HasJobOnCell),
-                new[] { typeof(Pawn), typeof(IntVec3), typeof(bool) }, seen, out MethodInfo baseCell);
-            if (baseCell != null) yield return baseCell;
-        }
-
-        private static void Add(Type type, string name, Type[] args, HashSet<MethodBase> seen, out MethodInfo result)
-        {
-            result = AccessTools.DeclaredMethod(type, name, args);
-            if (result == null || result.ReturnType != typeof(bool) || !seen.Add(result))
-                result = null;
+            if (baseMethod != null && seen.Add(baseMethod))
+                yield return baseMethod;
         }
 
         [HarmonyPrefix]
-        public static bool Prefix(Pawn pawn, MethodBase __originalMethod, object[] __args, ref bool __result)
+        public static bool Prefix(Pawn pawn, Thing t, ref bool __result)
         {
-            if (pawn == null || __args == null || __args.Length < 2)
+            if (pawn == null || t == null)
                 return true;
 
             BetterRimAISettings settings = BetterRimAIMod.Settings;
             if (settings == null || !settings.threatAwareOutdoorWork)
                 return true;
 
-            if (__args[1] is Thing thing && ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkTarget(pawn, thing))
+            // Global danger blocks prefer thingIDNumber when available, so a lightweight probe is
+            // enough to ask whether this exact candidate was previously proven unsafe. The probe is
+            // never started and never reserves anything.
+            Job probe = JobMaker.MakeJob(JobDefOf.Wait);
+            probe.targetA = t;
+            bool suppress;
+            try
             {
-                __result = false;
-                return false;
+                suppress = ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, probe);
+            }
+            finally
+            {
+                JobMaker.ReturnToPool(probe);
             }
 
-            if (__args[1] is IntVec3 cell && ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkTarget(pawn, cell))
-            {
-                __result = false;
-                return false;
-            }
+            if (!suppress)
+                return true;
 
-            return true;
+            __result = false;
+            return false;
         }
     }
 }
