@@ -9,15 +9,13 @@ using Verse.AI;
 namespace BetterRimAI
 {
     /// <summary>
-    /// Hide thing targets that were already proven unsafe before JobGiver_Work chooses its best
-    /// candidate. This lets vanilla continue scanning and pick the next useful task instead of
-    /// selecting the unsafe target and then ending up with NoJob.
-    ///
-    /// GenTypes.AllTypes is intentional: hauling mods can provide their own WorkGiver_Scanner
-    /// subclasses outside Assembly-CSharp, and those must be filtered too.
+    /// RimWorld 1.6 JobGiver_Work validates scanner candidates through HasJobOnThing/HasJobOnCell
+    /// before it asks the scanner to build the final Job. A target that our runtime path guard has
+    /// already proven unsafe must fail here, so vanilla simply continues scanning other targets and
+    /// other WorkGivers instead of starting/cancelling the same job in a tight loop.
     /// </summary>
     [HarmonyPatch]
-    public static class ThreatAwareBlockedThingCandidatePatch
+    public static class ThreatAwareBlockedCandidatePatch
     {
         [HarmonyTargetMethods]
         public static IEnumerable<MethodBase> TargetMethods()
@@ -28,153 +26,56 @@ namespace BetterRimAI
             foreach (Type type in GenTypes.AllTypes)
             {
                 if (type == null || type.IsAbstract || !scannerType.IsAssignableFrom(type))
-                {
                     continue;
-                }
 
-                MethodInfo method = AccessTools.DeclaredMethod(
-                    type,
-                    nameof(WorkGiver_Scanner.HasJobOnThing),
-                    new[] { typeof(Pawn), typeof(Thing), typeof(bool) });
+                Add(type, nameof(WorkGiver_Scanner.HasJobOnThing),
+                    new[] { typeof(Pawn), typeof(Thing), typeof(bool) }, seen, out MethodInfo thing);
+                if (thing != null) yield return thing;
 
-                if (method != null && method.ReturnType == typeof(bool) && seen.Add(method))
-                {
-                    yield return method;
-                }
+                Add(type, nameof(WorkGiver_Scanner.HasJobOnCell),
+                    new[] { typeof(Pawn), typeof(IntVec3), typeof(bool) }, seen, out MethodInfo cell);
+                if (cell != null) yield return cell;
             }
 
-            MethodInfo baseMethod = AccessTools.DeclaredMethod(
-                scannerType,
-                nameof(WorkGiver_Scanner.HasJobOnThing),
-                new[] { typeof(Pawn), typeof(Thing), typeof(bool) });
+            Add(scannerType, nameof(WorkGiver_Scanner.HasJobOnThing),
+                new[] { typeof(Pawn), typeof(Thing), typeof(bool) }, seen, out MethodInfo baseThing);
+            if (baseThing != null) yield return baseThing;
 
-            if (baseMethod != null && seen.Add(baseMethod))
-            {
-                yield return baseMethod;
-            }
+            Add(scannerType, nameof(WorkGiver_Scanner.HasJobOnCell),
+                new[] { typeof(Pawn), typeof(IntVec3), typeof(bool) }, seen, out MethodInfo baseCell);
+            if (baseCell != null) yield return baseCell;
+        }
+
+        private static void Add(Type type, string name, Type[] args, HashSet<MethodBase> seen, out MethodInfo result)
+        {
+            result = AccessTools.DeclaredMethod(type, name, args);
+            if (result == null || result.ReturnType != typeof(bool) || !seen.Add(result))
+                result = null;
         }
 
         [HarmonyPrefix]
-        public static bool Prefix(Pawn pawn, Thing t, ref bool __result)
+        public static bool Prefix(Pawn pawn, MethodBase __originalMethod, object[] __args, ref bool __result)
         {
-            if (!ShouldSuppressThing(pawn, t))
-            {
+            if (pawn == null || __args == null || __args.Length < 2)
                 return true;
-            }
-
-            __result = false;
-            return false;
-        }
-
-        private static bool ShouldSuppressThing(Pawn pawn, Thing thing)
-        {
-            if (pawn == null || thing == null)
-            {
-                return false;
-            }
 
             BetterRimAISettings settings = BetterRimAIMod.Settings;
             if (settings == null || !settings.threatAwareOutdoorWork)
+                return true;
+
+            if (__args[1] is Thing thing && ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkTarget(pawn, thing))
             {
+                __result = false;
                 return false;
             }
 
-            // Thing-based danger blocks are identified by thingIDNumber, so the probe job's def is
-            // irrelevant. It is never started or reserved.
-            Job probe = JobMaker.MakeJob(JobDefOf.Wait);
-            probe.targetA = thing;
-
-            try
+            if (__args[1] is IntVec3 cell && ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkTarget(pawn, cell))
             {
-                return ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, probe);
-            }
-            finally
-            {
-                JobMaker.ReturnToPool(probe);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Cell scanners need the actual generated Job because their block identity includes the job
-    /// type as well as the destination cell. This also acts as a fallback for custom thing scanners
-    /// whose HasJobOnThing implementation does not use the normal base behavior.
-    /// </summary>
-    [HarmonyPatch]
-    public static class ThreatAwareBlockedGeneratedJobPatch
-    {
-        [HarmonyTargetMethods]
-        public static IEnumerable<MethodBase> TargetMethods()
-        {
-            Type scannerType = typeof(WorkGiver_Scanner);
-            HashSet<MethodBase> seen = new HashSet<MethodBase>();
-
-            foreach (Type type in GenTypes.AllTypes)
-            {
-                if (type == null || type.IsAbstract || !scannerType.IsAssignableFrom(type))
-                {
-                    continue;
-                }
-
-                MethodInfo thingMethod = AccessTools.DeclaredMethod(
-                    type,
-                    nameof(WorkGiver_Scanner.JobOnThing),
-                    new[] { typeof(Pawn), typeof(Thing), typeof(bool) });
-                if (thingMethod != null && thingMethod.ReturnType == typeof(Job) && seen.Add(thingMethod))
-                {
-                    yield return thingMethod;
-                }
-
-                MethodInfo cellMethod = AccessTools.DeclaredMethod(
-                    type,
-                    nameof(WorkGiver_Scanner.JobOnCell),
-                    new[] { typeof(Pawn), typeof(IntVec3), typeof(bool) });
-                if (cellMethod != null && cellMethod.ReturnType == typeof(Job) && seen.Add(cellMethod))
-                {
-                    yield return cellMethod;
-                }
+                __result = false;
+                return false;
             }
 
-            MethodInfo baseThing = AccessTools.DeclaredMethod(
-                scannerType,
-                nameof(WorkGiver_Scanner.JobOnThing),
-                new[] { typeof(Pawn), typeof(Thing), typeof(bool) });
-            if (baseThing != null && seen.Add(baseThing))
-            {
-                yield return baseThing;
-            }
-
-            MethodInfo baseCell = AccessTools.DeclaredMethod(
-                scannerType,
-                nameof(WorkGiver_Scanner.JobOnCell),
-                new[] { typeof(Pawn), typeof(IntVec3), typeof(bool) });
-            if (baseCell != null && seen.Add(baseCell))
-            {
-                yield return baseCell;
-            }
-        }
-
-        [HarmonyPostfix]
-        public static void Postfix(Pawn pawn, ref Job __result)
-        {
-            if (__result == null || pawn == null)
-            {
-                return;
-            }
-
-            BetterRimAISettings settings = BetterRimAIMod.Settings;
-            if (settings == null || !settings.threatAwareOutdoorWork)
-            {
-                return;
-            }
-
-            if (!ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, __result))
-            {
-                return;
-            }
-
-            JobMaker.ReturnToPool(__result);
-            __result = null;
+            return true;
         }
     }
 }
