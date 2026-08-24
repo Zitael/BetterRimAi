@@ -2,20 +2,36 @@
 
 A RimWorld 1.6 mod focused on smarter pawn work planning.
 
-## v0.1 — long-trip need guard
+## Long-trip need guard
 
 When vanilla RimWorld selects a normal work job more than **50 cells** away, BetterRimAI checks the pawn before allowing the trip.
 
 Current preparation thresholds:
 
-- Food: 38%
-- Rest: 30%
+- Food: 45%
+- Rest: 40%
 
 If one of those needs is low, the mod asks RimWorld's own vanilla `JobGiver_GetFood` / `JobGiver_GetRest` to produce the appropriate job and uses it instead of the distant work. If vanilla cannot produce that job yet, the distant work is deferred rather than sending the pawn across the map immediately before a need interruption.
 
 Emergency work and player-forced jobs are not changed.
 
-This is deliberately a small first iteration. The next step is work batching: once a pawn has paid the travel cost to reach a remote work area, prefer nearby compatible jobs before returning to global job selection.
+## Threat-aware outdoor work
+
+Automatic work whose destination is outside the player's **Home area** is checked against the pawn's actual vanilla path.
+
+By default:
+
+- the feature is enabled;
+- a hostile within **15 cells** of the calculated route blocks the automatic outdoor job;
+- a hostile within **20 cells** of the route's Home-area exit blocks the job before the pawn leaves the base;
+- hostiles elsewhere on the map do not matter;
+- drafted pawns, player-forced jobs and colonists whose hostility response is **Attack** bypass this restriction.
+
+The hostile check covers hostile pawns such as raiders, manhunters and shamblers through RimWorld's normal `HostileTo` relationship.
+
+The two radii and the feature toggle are available under **Options → Mod settings → Better Rim AI**.
+
+This version blocks an unsafe automatic trip rather than rewriting RimWorld 1.6's low-level pathfinder. That deliberately keeps the mod lightweight and compatible while still preventing a pawn from opening the base and walking through a hostile corridor.
 
 ## Requirements
 
@@ -65,14 +81,16 @@ Then start RimWorld, open **Mods**, enable **Harmony** and **Better Rim AI**, ke
 On startup the log should contain:
 
 ```text
-[BetterRimAI] v0.1 loaded: long-trip need guard enabled.
+[BetterRimAI] loaded: long-trip need guard + threat-aware outdoor work enabled.
 ```
 
-When the guard activates, it logs a line such as:
+When the long-trip guard activates, it logs a line such as:
 
 ```text
 [BetterRimAI] Bob: distant work 87 cells, food=34%, rest=62% -> replaced distant work with food.
 ```
+
+When threat-aware outdoor work blocks a trip, it logs a throttled line identifying whether the threat was near the Home-area exit or the calculated route.
 
 ## Development workflow
 
