@@ -9,10 +9,9 @@ using Verse.AI;
 namespace BetterRimAI
 {
     /// <summary>
-    /// RimWorld 1.6 JobGiver_Work calls HasJobOnThing while its internal Validator is deciding
-    /// whether a scanner candidate may participate in the best-target search. If the runtime path
-    /// guard has already proved a Thing unsafe, reject it here. Vanilla then keeps scanning instead
-    /// of starting and cancelling the same hauling job over and over.
+    /// Generic compatibility layer for vanilla and modded WorkGiver_Scanner implementations.
+    /// Uses __args rather than concrete argument names because mods are free to rename
+    /// HasJobOnThing(Pawn, Thing, bool) parameters (for example Vehicles uses "thing", not "t").
     /// </summary>
     [HarmonyPatch]
     public static class ThreatAwareBlockedThingCandidatePatch
@@ -45,20 +44,22 @@ namespace BetterRimAI
         }
 
         [HarmonyPrefix]
-        public static bool Prefix(Pawn pawn, Thing t, ref bool __result)
+        public static bool Prefix(object[] __args, MethodBase __originalMethod, ref bool __result)
         {
-            if (pawn == null || t == null)
+            if (__args == null || __args.Length < 2)
+                return true;
+
+            Pawn pawn = __args[0] as Pawn;
+            Thing thing = __args[1] as Thing;
+            if (pawn == null || thing == null)
                 return true;
 
             BetterRimAISettings settings = BetterRimAIMod.Settings;
             if (settings == null || !settings.threatAwareOutdoorWork)
                 return true;
 
-            // Global danger blocks prefer thingIDNumber when available, so a lightweight probe is
-            // enough to ask whether this exact candidate was previously proven unsafe. The probe is
-            // never started and never reserves anything.
             Job probe = JobMaker.MakeJob(JobDefOf.Wait);
-            probe.targetA = t;
+            probe.targetA = thing;
             bool suppress;
             try
             {
@@ -71,6 +72,14 @@ namespace BetterRimAI
 
             if (!suppress)
                 return true;
+
+            ThreatAwareBlockDiagnostics.Once(
+                "generic-rejected",
+                pawn,
+                thing,
+                pawn.CurJob,
+                true,
+                "method=" + (__originalMethod?.DeclaringType?.FullName ?? "unknown") + "." + (__originalMethod?.Name ?? "unknown"));
 
             __result = false;
             return false;
