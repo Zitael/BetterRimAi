@@ -9,24 +9,109 @@ using Verse.AI;
 namespace BetterRimAI
 {
     /// <summary>
-    /// The path guard learns that a concrete work target is unsafe only after RimWorld has built
-    /// a real path to it. Once learned, suppress that target while WorkGiver_Scanner is evaluating
-    /// candidates. This is deliberately earlier than JobGiver_Work's final ThinkResult: rejecting
-    /// the final result would make the pawn idle, while rejecting only the candidate lets vanilla
-    /// keep scanning and choose the next useful job.
+    /// Hide thing targets that were already proven unsafe before JobGiver_Work chooses its best
+    /// candidate. This lets vanilla continue scanning and pick the next useful task instead of
+    /// selecting the unsafe target and then ending up with NoJob.
+    ///
+    /// GenTypes.AllTypes is intentional: hauling mods can provide their own WorkGiver_Scanner
+    /// subclasses outside Assembly-CSharp, and those must be filtered too.
     /// </summary>
     [HarmonyPatch]
-    public static class ThreatAwareWorkCandidatePatch
+    public static class ThreatAwareBlockedThingCandidatePatch
     {
         [HarmonyTargetMethods]
         public static IEnumerable<MethodBase> TargetMethods()
         {
             Type scannerType = typeof(WorkGiver_Scanner);
-            Assembly assembly = scannerType.Assembly;
+            HashSet<MethodBase> seen = new HashSet<MethodBase>();
 
-            foreach (Type type in assembly.GetTypes())
+            foreach (Type type in GenTypes.AllTypes)
             {
-                if (type.IsAbstract || !scannerType.IsAssignableFrom(type))
+                if (type == null || type.IsAbstract || !scannerType.IsAssignableFrom(type))
+                {
+                    continue;
+                }
+
+                MethodInfo method = AccessTools.DeclaredMethod(
+                    type,
+                    nameof(WorkGiver_Scanner.HasJobOnThing),
+                    new[] { typeof(Pawn), typeof(Thing), typeof(bool) });
+
+                if (method != null && method.ReturnType == typeof(bool) && seen.Add(method))
+                {
+                    yield return method;
+                }
+            }
+
+            MethodInfo baseMethod = AccessTools.DeclaredMethod(
+                scannerType,
+                nameof(WorkGiver_Scanner.HasJobOnThing),
+                new[] { typeof(Pawn), typeof(Thing), typeof(bool) });
+
+            if (baseMethod != null && seen.Add(baseMethod))
+            {
+                yield return baseMethod;
+            }
+        }
+
+        [HarmonyPrefix]
+        public static bool Prefix(Pawn pawn, Thing t, ref bool __result)
+        {
+            if (!ShouldSuppressThing(pawn, t))
+            {
+                return true;
+            }
+
+            __result = false;
+            return false;
+        }
+
+        private static bool ShouldSuppressThing(Pawn pawn, Thing thing)
+        {
+            if (pawn == null || thing == null)
+            {
+                return false;
+            }
+
+            BetterRimAISettings settings = BetterRimAIMod.Settings;
+            if (settings == null || !settings.threatAwareOutdoorWork)
+            {
+                return false;
+            }
+
+            // Thing-based danger blocks are identified by thingIDNumber, so the probe job's def is
+            // irrelevant. It is never started or reserved.
+            Job probe = JobMaker.MakeJob(JobDefOf.Wait);
+            probe.targetA = thing;
+
+            try
+            {
+                return ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, probe);
+            }
+            finally
+            {
+                JobMaker.ReturnToPool(probe);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Cell scanners need the actual generated Job because their block identity includes the job
+    /// type as well as the destination cell. This also acts as a fallback for custom thing scanners
+    /// whose HasJobOnThing implementation does not use the normal base behavior.
+    /// </summary>
+    [HarmonyPatch]
+    public static class ThreatAwareBlockedGeneratedJobPatch
+    {
+        [HarmonyTargetMethods]
+        public static IEnumerable<MethodBase> TargetMethods()
+        {
+            Type scannerType = typeof(WorkGiver_Scanner);
+            HashSet<MethodBase> seen = new HashSet<MethodBase>();
+
+            foreach (Type type in GenTypes.AllTypes)
+            {
+                if (type == null || type.IsAbstract || !scannerType.IsAssignableFrom(type))
                 {
                     continue;
                 }
@@ -35,7 +120,7 @@ namespace BetterRimAI
                     type,
                     nameof(WorkGiver_Scanner.JobOnThing),
                     new[] { typeof(Pawn), typeof(Thing), typeof(bool) });
-                if (thingMethod != null && thingMethod.ReturnType == typeof(Job))
+                if (thingMethod != null && thingMethod.ReturnType == typeof(Job) && seen.Add(thingMethod))
                 {
                     yield return thingMethod;
                 }
@@ -44,18 +129,17 @@ namespace BetterRimAI
                     type,
                     nameof(WorkGiver_Scanner.JobOnCell),
                     new[] { typeof(Pawn), typeof(IntVec3), typeof(bool) });
-                if (cellMethod != null && cellMethod.ReturnType == typeof(Job))
+                if (cellMethod != null && cellMethod.ReturnType == typeof(Job) && seen.Add(cellMethod))
                 {
                     yield return cellMethod;
                 }
             }
 
-            // Include the base implementations as well. Some scanners inherit them unchanged.
             MethodInfo baseThing = AccessTools.DeclaredMethod(
                 scannerType,
                 nameof(WorkGiver_Scanner.JobOnThing),
                 new[] { typeof(Pawn), typeof(Thing), typeof(bool) });
-            if (baseThing != null)
+            if (baseThing != null && seen.Add(baseThing))
             {
                 yield return baseThing;
             }
@@ -64,7 +148,7 @@ namespace BetterRimAI
                 scannerType,
                 nameof(WorkGiver_Scanner.JobOnCell),
                 new[] { typeof(Pawn), typeof(IntVec3), typeof(bool) });
-            if (baseCell != null)
+            if (baseCell != null && seen.Add(baseCell))
             {
                 yield return baseCell;
             }
@@ -84,67 +168,13 @@ namespace BetterRimAI
                 return;
             }
 
-            if (ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, __result))
-            {
-                JobMaker.ReturnToPool(__result);
-                __result = null;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Disable the older final-result suppression. It was useful to prove the block registry, but
-    /// returning ThinkResult.NoJob after JobGiver_Work has already chosen a target prevents vanilla
-    /// from considering its second-best candidate. Candidate filtering above replaces it.
-    /// </summary>
-    [HarmonyPatch(typeof(ThreatAwareOutdoorWorkPatch), nameof(ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob))]
-    public static class ThreatAwareLegacyFinalSuppressionCompatibilityPatch
-    {
-        // Marker patch only. The actual JobGiver_Work postfix is neutralized by making its caller
-        // see no block after candidate scanning has had a chance to act. We cannot simply remove an
-        // already compiled Harmony patch at runtime, so use a short-lived guard around final result
-        // evaluation below.
-    }
-
-    [HarmonyPatch(typeof(JobGiver_Work), nameof(JobGiver_Work.TryIssueJobPackage))]
-    [HarmonyPriority(Priority.Last)]
-    public static class ThreatAwareFinalResultRecoveryPatch
-    {
-        [HarmonyPostfix]
-        public static void Postfix(Pawn pawn, ref ThinkResult __result)
-        {
-            // If the older postfix changed a valid unsafe result to NoJob, immediately ask the
-            // normal work giver once more. Candidate-level patches above now hide the unsafe target,
-            // so this second pass can select another job. Recursion is guarded per thread.
-            if (__result.IsValid || pawn == null || BetterRimAIMod.Settings == null
-                || !BetterRimAIMod.Settings.threatAwareOutdoorWork || RecoveryGuard.active)
+            if (!ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, __result))
             {
                 return;
             }
 
-            try
-            {
-                RecoveryGuard.active = true;
-                ThinkResult retry = new JobGiver_Work().TryIssueJobPackage(pawn, default(JobIssueParams));
-                if (retry.IsValid)
-                {
-                    __result = retry;
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Warning("[BetterRimAI] Alternative work recovery failed for " + pawn + ": " + ex);
-            }
-            finally
-            {
-                RecoveryGuard.active = false;
-            }
-        }
-
-        private static class RecoveryGuard
-        {
-            [ThreadStatic]
-            public static bool active;
+            JobMaker.ReturnToPool(__result);
+            __result = null;
         }
     }
 }
