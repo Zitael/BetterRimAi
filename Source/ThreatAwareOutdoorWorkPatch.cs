@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection;
 using HarmonyLib;
 using RimWorld;
 using Verse;
@@ -9,141 +8,147 @@ using Verse.AI;
 namespace BetterRimAI
 {
     /// <summary>
-    /// Stops non-combat colonists from starting automatic work outside the Home area when
-    /// the actual vanilla route passes close to a hostile pawn. Hostiles elsewhere on the map
-    /// are intentionally ignored.
+    /// RimWorld 1.6 pathfinding is asynchronous. Instead of trying to generate a path ourselves,
+    /// inspect Pawn_PathFollower.curPath after vanilla has calculated it. This makes the safety
+    /// check apply to both automatic and player-forced civilian jobs while still allowing drafted
+    /// pawns and pawns whose hostility response is Attack to follow player intent.
     /// </summary>
-    [HarmonyPatch(typeof(JobGiver_Work), nameof(JobGiver_Work.TryIssueJobPackage))]
-    [HarmonyPriority(Priority.Low)]
+    [HarmonyPatch(typeof(Pawn_PathFollower), nameof(Pawn_PathFollower.PatherTick))]
+    [HarmonyPriority(Priority.First)]
     public static class ThreatAwareOutdoorWorkPatch
     {
         private const int LogCooldownTicks = 600;
-        private static readonly Dictionary<int, int> LastLogTickByPawn = new Dictionary<int, int>();
+        private const int MovingThreatRecheckTicks = 30;
 
-        // RimWorld 1.6 moved path calculation internals again. Keep the mod build-stable by
-        // resolving the current private/public path method dynamically rather than binding to a
-        // compile-time method that may not exist on Pawn_PathFollower in a given 1.6 build.
-        private static readonly MethodInfo GenerateNewPathMethod = AccessTools.Method(typeof(Pawn_PathFollower), "GenerateNewPath");
-
-        [HarmonyPostfix]
-        public static void Postfix(JobGiver_Work __instance, Pawn pawn, ref ThinkResult __result)
+        private sealed class PathCheckState
         {
+            public PawnPath path;
+            public IntVec3 nextCell = IntVec3.Invalid;
+            public int lastCheckTick = -999999;
+        }
+
+        private static readonly Dictionary<int, int> LastLogTickByPawn = new Dictionary<int, int>();
+        private static readonly Dictionary<int, PathCheckState> CheckStateByPawn = new Dictionary<int, PathCheckState>();
+        private static readonly List<IntVec3> RemainingPathCells = new List<IntVec3>(256);
+
+        [HarmonyPrefix]
+        public static bool Prefix(Pawn_PathFollower __instance, Pawn ___pawn)
+        {
+            Pawn pawn = ___pawn;
+
             try
             {
                 BetterRimAISettings settings = BetterRimAIMod.Settings;
                 if (settings == null || !settings.threatAwareOutdoorWork)
                 {
-                    return;
+                    return true;
                 }
 
-                if (pawn == null || !pawn.Spawned || !pawn.IsColonist || pawn.Drafted || __instance.emergency || !__result.IsValid)
+                if (pawn == null || !pawn.Spawned || !pawn.IsColonist || pawn.Drafted || pawn.CurJob == null)
                 {
-                    return;
-                }
-
-                Job job = __result.Job;
-                if (job == null || job.playerForced)
-                {
-                    return;
+                    return true;
                 }
 
                 if (pawn.playerSettings != null
                     && pawn.playerSettings.UsesConfigurableHostilityResponse
                     && pawn.playerSettings.hostilityResponse == HostilityResponseMode.Attack)
                 {
-                    return;
+                    return true;
                 }
 
-                if (!TryGetDestination(job, out IntVec3 destination))
+                PawnPath path = __instance.curPath;
+                if (!__instance.Moving || path == null || !path.Found || path.Finished || path.NodesLeftCount <= 0)
                 {
-                    return;
+                    return true;
                 }
+
+                int tick = Find.TickManager?.TicksGame ?? 0;
+                int pawnId = pawn.thingIDNumber;
+                if (!CheckStateByPawn.TryGetValue(pawnId, out PathCheckState state))
+                {
+                    state = new PathCheckState();
+                    CheckStateByPawn[pawnId] = state;
+                }
+
+                bool newPath = !ReferenceEquals(state.path, path);
+                bool newCell = state.nextCell != __instance.nextCell;
+                bool timedRecheck = tick - state.lastCheckTick >= MovingThreatRecheckTicks;
+                if (!newPath && !newCell && !timedRecheck)
+                {
+                    return true;
+                }
+
+                state.path = path;
+                state.nextCell = __instance.nextCell;
+                state.lastCheckTick = tick;
 
                 Map map = pawn.Map;
-                if (map == null || !destination.InBounds(map))
+                Area_Home home = map?.areaManager?.Home;
+                if (map == null || home == null)
                 {
-                    return;
+                    return true;
                 }
 
-                Area_Home home = map.areaManager?.Home;
-                if (home == null || home[destination])
+                RemainingPathCells.Clear();
+                path.PeekNextCells(path.NodesLeftCount, RemainingPathCells, 0);
+                if (RemainingPathCells.Count == 0)
                 {
-                    return;
+                    return true;
+                }
+
+                bool leavesHome = !home[pawn.Position];
+                if (!leavesHome)
+                {
+                    for (int i = 0; i < RemainingPathCells.Count; i++)
+                    {
+                        IntVec3 cell = RemainingPathCells[i];
+                        if (cell.InBounds(map) && !home[cell])
+                        {
+                            leavesHome = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!leavesHome)
+                {
+                    return true;
                 }
 
                 List<Pawn> hostiles = GetRelevantHostiles(pawn, map);
                 if (hostiles.Count == 0)
                 {
-                    return;
+                    return true;
                 }
 
-                PawnPath path = TryGenerateVanillaPath(pawn, destination);
-                if (path == null || path == PawnPath.NotFound)
+                if (!TryFindUnsafeThreat(
+                        pawn,
+                        RemainingPathCells,
+                        home,
+                        hostiles,
+                        settings,
+                        out Pawn threat,
+                        out string reason,
+                        out float closestDistance))
                 {
-                    return;
+                    return true;
                 }
 
-                try
-                {
-                    if (TryFindUnsafeThreat(pawn, path, home, hostiles, settings, out Pawn threat, out string reason, out float closestDistance))
-                    {
-                        __result = ThinkResult.NoJob;
-                        LogDecision(pawn, destination, threat, reason, closestDistance, settings);
-                    }
-                }
-                finally
-                {
-                    path.ReleaseToPool();
-                }
+                IntVec3 destination = __instance.Destination.IsValid
+                    ? __instance.Destination.Cell
+                    : RemainingPathCells[RemainingPathCells.Count - 1];
+
+                LogDecision(pawn, destination, threat, reason, closestDistance, settings);
+
+                // Safety applies to civilian movement even for a direct right-click order.
+                // Drafting the pawn or selecting Attack response is the explicit override.
+                pawn.jobs.EndCurrentJob(JobCondition.Incompletable);
+                return false;
             }
             catch (Exception ex)
             {
-                Log.Error("[BetterRimAI] Threat-aware outdoor work check failed for " + pawn + ": " + ex);
-            }
-        }
-
-        private static PawnPath TryGenerateVanillaPath(Pawn pawn, IntVec3 destination)
-        {
-            if (pawn?.pather == null || GenerateNewPathMethod == null)
-            {
-                return null;
-            }
-
-            try
-            {
-                ParameterInfo[] parameters = GenerateNewPathMethod.GetParameters();
-                object[] args;
-
-                if (parameters.Length == 0)
-                {
-                    // GenerateNewPath usually relies on the pather's current destination and is not
-                    // useful to us unless that state has already been initialized for this job.
-                    return null;
-                }
-
-                if (parameters.Length == 2
-                    && parameters[0].ParameterType == typeof(LocalTargetInfo)
-                    && parameters[1].ParameterType == typeof(PathEndMode))
-                {
-                    args = new object[] { new LocalTargetInfo(destination), PathEndMode.Touch };
-                }
-                else if (parameters.Length == 2
-                    && parameters[0].ParameterType == typeof(IntVec3)
-                    && parameters[1].ParameterType == typeof(PathEndMode))
-                {
-                    args = new object[] { destination, PathEndMode.Touch };
-                }
-                else
-                {
-                    return null;
-                }
-
-                return GenerateNewPathMethod.Invoke(pawn.pather, args) as PawnPath;
-            }
-            catch (TargetInvocationException ex)
-            {
-                Log.Warning("[BetterRimAI] Vanilla path generation failed: " + (ex.InnerException ?? ex));
-                return null;
+                Log.Error("[BetterRimAI] Threat-aware path check failed for " + pawn + ": " + ex);
+                return true;
             }
         }
 
@@ -171,7 +176,7 @@ namespace BetterRimAI
 
         private static bool TryFindUnsafeThreat(
             Pawn pawn,
-            PawnPath path,
+            List<IntVec3> route,
             Area_Home home,
             List<Pawn> hostiles,
             BetterRimAISettings settings,
@@ -183,19 +188,14 @@ namespace BetterRimAI
             reason = null;
             closestDistance = float.MaxValue;
 
-            List<IntVec3> nodes = path.NodesReversed;
-            if (nodes == null || nodes.Count == 0)
-            {
-                return false;
-            }
-
+            Map map = pawn.Map;
             IntVec3 homeExitCell = IntVec3.Invalid;
-            bool previousWasHome = pawn.Position.InBounds(pawn.Map) && home[pawn.Position];
+            bool previousWasHome = pawn.Position.InBounds(map) && home[pawn.Position];
 
-            for (int i = nodes.Count - 1; i >= 0; i--)
+            for (int i = 0; i < route.Count; i++)
             {
-                IntVec3 node = nodes[i];
-                bool nodeIsHome = node.InBounds(pawn.Map) && home[node];
+                IntVec3 node = route[i];
+                bool nodeIsHome = node.InBounds(map) && home[node];
 
                 if (previousWasHome && !nodeIsHome)
                 {
@@ -215,32 +215,25 @@ namespace BetterRimAI
 
             float routeRadiusSquared = settings.routeThreatRadius * settings.routeThreatRadius;
 
-            for (int i = nodes.Count - 1; i >= 0; i -= 2)
+            // Only inspect the part of the remaining route outside Home. Hostiles elsewhere on
+            // the map are irrelevant, including roaming shamblers on the far side of the map.
+            for (int i = 0; i < route.Count; i += 2)
             {
-                IntVec3 node = nodes[i];
+                IntVec3 node = route[i];
+                if (!node.InBounds(map) || home[node])
+                {
+                    continue;
+                }
+
                 for (int h = 0; h < hostiles.Count; h++)
                 {
                     Pawn hostile = hostiles[h];
                     float distanceSquared = (node - hostile.Position).LengthHorizontalSquared;
-                    if (distanceSquared <= routeRadiusSquared)
+                    if (distanceSquared > routeRadiusSquared)
                     {
-                        float distance = (float)Math.Sqrt(distanceSquared);
-                        if (distance < closestDistance)
-                        {
-                            closestDistance = distance;
-                            threat = hostile;
-                        }
+                        continue;
                     }
-                }
-            }
 
-            IntVec3 destination = nodes[0];
-            for (int h = 0; h < hostiles.Count; h++)
-            {
-                Pawn hostile = hostiles[h];
-                float distanceSquared = (destination - hostile.Position).LengthHorizontalSquared;
-                if (distanceSquared <= routeRadiusSquared)
-                {
                     float distance = (float)Math.Sqrt(distanceSquared);
                     if (distance < closestDistance)
                     {
@@ -252,7 +245,7 @@ namespace BetterRimAI
 
             if (threat != null)
             {
-                reason = "hostile near calculated route";
+                reason = "hostile near actual remaining path";
                 return true;
             }
 
@@ -290,24 +283,6 @@ namespace BetterRimAI
             return threat != null;
         }
 
-        private static bool TryGetDestination(Job job, out IntVec3 destination)
-        {
-            if (job.targetA.IsValid)
-            {
-                destination = job.targetA.Cell;
-                return destination.IsValid;
-            }
-
-            if (job.targetB.IsValid)
-            {
-                destination = job.targetB.Cell;
-                return destination.IsValid;
-            }
-
-            destination = IntVec3.Invalid;
-            return false;
-        }
-
         private static void LogDecision(
             Pawn pawn,
             IntVec3 destination,
@@ -330,7 +305,8 @@ namespace BetterRimAI
 
             LastLogTickByPawn[pawnId] = tick;
             string threatLabel = threat == null ? "unknown hostile" : threat.LabelShort;
-            Log.Message($"[BetterRimAI] {pawn.LabelShort}: blocked outdoor work at {destination}; {reason}, nearest={threatLabel} at {closestDistance:F0} cells.");
+            string jobLabel = pawn.CurJob?.def?.defName ?? "unknown job";
+            Log.Message($"[BetterRimAI] {pawn.LabelShort}: stopped {jobLabel} toward {destination}; {reason}, nearest={threatLabel} at {closestDistance:F0} cells.");
         }
     }
 }
