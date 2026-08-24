@@ -1,7 +1,9 @@
 using System;
 using System.Reflection;
 using HarmonyLib;
+using RimWorld;
 using Verse;
+using Verse.AI;
 
 namespace BetterRimAI
 {
@@ -40,7 +42,19 @@ namespace BetterRimAI
             if (settings == null || !settings.threatAwareOutdoorWork)
                 return true;
 
-            if (!ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkTarget(pawn, thing))
+            Job probe = JobMaker.MakeJob(JobDefOf.Wait);
+            probe.targetA = thing;
+            bool suppress;
+            try
+            {
+                suppress = ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, probe);
+            }
+            finally
+            {
+                JobMaker.ReturnToPool(probe);
+            }
+
+            if (!suppress)
                 return true;
 
             __result = false;
