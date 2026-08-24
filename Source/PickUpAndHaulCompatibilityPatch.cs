@@ -8,11 +8,8 @@ using Verse.AI;
 namespace BetterRimAI
 {
     /// <summary>
-    /// Compatibility patch for Pick Up And Haul.
-    /// We intentionally patch its concrete HasJobOnThing by reflection, without taking a compile-time
-    /// dependency on PickUpAndHaul.dll. Once the runtime guard proves a Thing unsafe for this pawn,
-    /// the PUAH WorkGiver must reject that Thing during its own candidate scan. This prevents the
-    /// StartJob -> cancel -> immediately select the same haul target loop.
+    /// Optional compatibility for Pick Up And Haul. No compile-time dependency: if PUAH is absent,
+    /// Harmony skips this patch and the generic BetterRimAI path remains active.
     /// </summary>
     [HarmonyPatch]
     public static class PickUpAndHaulBlockedCandidatePatch
@@ -20,7 +17,10 @@ namespace BetterRimAI
         [HarmonyPrepare]
         public static bool Prepare()
         {
-            return AccessTools.TypeByName("PickUpAndHaul.WorkGiver_HaulToInventory") != null;
+            Type type = AccessTools.TypeByName("PickUpAndHaul.WorkGiver_HaulToInventory");
+            if (type != null)
+                Log.Message("[BetterRimAI][PUAH] compatibility enabled for " + type.AssemblyQualifiedName);
+            return type != null;
         }
 
         [HarmonyTargetMethod]
@@ -33,7 +33,7 @@ namespace BetterRimAI
         }
 
         [HarmonyPrefix]
-        public static bool Prefix(Pawn pawn, Thing thing, ref bool __result)
+        public static bool Prefix(Pawn pawn, Thing thing, bool forced, ref bool __result)
         {
             if (pawn == null || thing == null)
                 return true;
@@ -54,10 +54,19 @@ namespace BetterRimAI
                 JobMaker.ReturnToPool(probe);
             }
 
+            ThreatAwareBlockDiagnostics.Once(
+                "puah-hasjob",
+                pawn,
+                thing,
+                pawn.CurJob,
+                suppress,
+                $"forced={forced}, curJob={pawn.CurJob?.def?.defName ?? "null"}");
+
             if (!suppress)
                 return true;
 
             __result = false;
+            ThreatAwareBlockDiagnostics.Once("puah-rejected", pawn, thing, pawn.CurJob, true, "HasJobOnThing forced false");
             return false;
         }
     }
