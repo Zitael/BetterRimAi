@@ -62,7 +62,6 @@ namespace BetterRimAI
                 Area_Home home = map.areaManager?.Home;
                 if (home == null || home[destination])
                 {
-                    // The safety rule is specifically for jobs outside the player's Home area.
                     return;
                 }
 
@@ -72,12 +71,10 @@ namespace BetterRimAI
                     return;
                 }
 
-                PawnPath path = map.pathFinder.FindPath(
-                    pawn.Position,
-                    destination,
-                    TraverseParms.For(pawn, Danger.Deadly, TraverseMode.ByPawn, false),
-                    PathEndMode.Touch);
-
+                // RimWorld 1.6 no longer exposes the old PathFinder.FindPath API to mods.
+                // Use the pawn's pather, which delegates to vanilla pathfinding and gives us
+                // the same route the pawn would actually follow.
+                PawnPath path = pawn.pather?.TryFindPath(destination, PathEndMode.Touch);
                 if (path == null || path == PawnPath.NotFound)
                 {
                     return;
@@ -105,7 +102,7 @@ namespace BetterRimAI
         private static List<Pawn> GetRelevantHostiles(Pawn pawn, Map map)
         {
             List<Pawn> result = new List<Pawn>();
-            List<Pawn> allPawns = map.mapPawns.AllPawnsSpawned;
+            IReadOnlyList<Pawn> allPawns = map.mapPawns.AllPawnsSpawned;
 
             for (int i = 0; i < allPawns.Count; i++)
             {
@@ -144,8 +141,6 @@ namespace BetterRimAI
                 return false;
             }
 
-            // NodesReversed is destination -> start. Walk it backwards to inspect the route
-            // in the same direction the pawn will travel.
             IntVec3 homeExitCell = IntVec3.Invalid;
             bool previousWasHome = pawn.Position.InBounds(pawn.Map) && home[pawn.Position];
 
@@ -172,8 +167,6 @@ namespace BetterRimAI
 
             float routeRadiusSquared = settings.routeThreatRadius * settings.routeThreatRadius;
 
-            // Sample every second path node for a cheaper corridor check. Always check the
-            // destination node as well. This keeps threats on the other side of the map irrelevant.
             for (int i = nodes.Count - 1; i >= 0; i -= 2)
             {
                 IntVec3 node = nodes[i];
