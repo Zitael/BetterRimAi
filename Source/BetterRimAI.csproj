@@ -13,11 +13,21 @@
   <Target Name="ValidateRimWorldDir" BeforeTargets="ResolveReferences">
     <Error Condition="'$(RimWorldDir)' == ''" Text="RimWorldDir is not set. Run: dotnet build -p:RimWorldDir=&quot;C:\Program Files (x86)\Steam\steamapps\common\RimWorld&quot;" />
     <Error Condition="!Exists('$(RimWorldDir)\RimWorldWin64_Data\Managed\Assembly-CSharp.dll')" Text="Assembly-CSharp.dll was not found under $(RimWorldDir). Check the RimWorldDir path." />
+    <Error Condition="!Exists('$(RimWorldDir)\RimWorldWin64_Data\Managed\UnityEngine.CoreModule.dll')" Text="UnityEngine.CoreModule.dll was not found under $(RimWorldDir). Check the RimWorldDir path." />
+    <Error Condition="!Exists('$(RimWorldDir)\RimWorldWin64_Data\Managed\UnityEngine.IMGUIModule.dll')" Text="UnityEngine.IMGUIModule.dll was not found under $(RimWorldDir). Check the RimWorldDir path." />
   </Target>
 
   <ItemGroup>
     <Reference Include="Assembly-CSharp">
       <HintPath>$(RimWorldDir)\RimWorldWin64_Data\Managed\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(RimWorldDir)\RimWorldWin64_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(RimWorldDir)\RimWorldWin64_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
