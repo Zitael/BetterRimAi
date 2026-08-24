@@ -8,7 +8,7 @@ namespace BetterRimAI
     [HarmonyPatch(typeof(Pawn_JobTracker), nameof(Pawn_JobTracker.EndCurrentJob))]
     public static class ThreatAwareEndJobDiagnostics
     {
-        private sealed class State
+        public sealed class State
         {
             public Pawn pawn;
             public Job job;
