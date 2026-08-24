@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>BetterRimAI</AssemblyName>
+    <RootNamespace>BetterRimAI</RootNamespace>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <RimWorldDir Condition="'$(RimWorldDir)' == ''">$(RIMWORLD_DIR)</RimWorldDir>
+  </PropertyGroup>
+
+  <Target Name="ValidateRimWorldDir" BeforeTargets="ResolveReferences">
+    <Error Condition="'$(RimWorldDir)' == ''" Text="RimWorldDir is not set. Run: dotnet build -p:RimWorldDir=&quot;C:\Program Files (x86)\Steam\steamapps\common\RimWorld&quot;" />
+    <Error Condition="!Exists('$(RimWorldDir)\RimWorldWin64_Data\Managed\Assembly-CSharp.dll')" Text="Assembly-CSharp.dll was not found under $(RimWorldDir). Check the RimWorldDir path." />
+  </Target>
+
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(RimWorldDir)\RimWorldWin64_Data\Managed\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Lib.Harmony.Ref" Version="2.4.1" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <Target Name="StageMod" AfterTargets="Build">
+    <PropertyGroup>
+      <ModStageDir>$(MSBuildProjectDirectory)\..\dist\BetterRimAI</ModStageDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(ModStageDir)\About;$(ModStageDir)\Assemblies" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\About\About.xml" DestinationFolder="$(ModStageDir)\About" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ModStageDir)\Assemblies" />
+    <Copy SourceFiles="$(TargetDir)$(AssemblyName).pdb" DestinationFolder="$(ModStageDir)\Assemblies" Condition="Exists('$(TargetDir)$(AssemblyName).pdb')" />
+  </Target>
+</Project>
