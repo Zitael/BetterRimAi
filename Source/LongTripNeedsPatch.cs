@@ -18,8 +18,10 @@ namespace BetterRimAI
     public static class LongTripNeedsPatch
     {
         private const float LongTripDistance = 50f;
-        private const float FoodPrepareThreshold = 0.38f;
-        private const float RestPrepareThreshold = 0.30f;
+        // These are deliberately earlier than vanilla's urgent thresholds: the whole point is
+        // to prepare before a long trip, not react after the pawn has already crossed the map.
+        private const float FoodPrepareThreshold = 0.45f;
+        private const float RestPrepareThreshold = 0.40f;
         private const int LogCooldownTicks = 600;
 
         private static readonly MethodInfo GetFoodJobMethod = AccessTools.Method(typeof(JobGiver_GetFood), "TryGiveJob");
