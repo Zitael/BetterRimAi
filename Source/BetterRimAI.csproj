@@ -11,7 +11,7 @@
   </PropertyGroup>
 
   <Target Name="ValidateRimWorldDir" BeforeTargets="ResolveReferences">
-    <Error Condition="'$(RimWorldDir)' == ''" Text="RimWorldDir is not set. Run: dotnet build -p:RimWorldDir=&quot;C:\Program Files (x86)\Steam\steamapps\common\RimWorld&quot;"" />
+    <Error Condition="'$(RimWorldDir)' == ''" Text="RimWorldDir is not set. Run: dotnet build -p:RimWorldDir=&quot;C:\Program Files (x86)\Steam\steamapps\common\RimWorld&quot;" />
     <Error Condition="!Exists('$(RimWorldDir)\RimWorldWin64_Data\Managed\Assembly-CSharp.dll')" Text="Assembly-CSharp.dll was not found under $(RimWorldDir). Check the RimWorldDir path." />
   </Target>
 
