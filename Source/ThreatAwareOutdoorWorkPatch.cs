@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using HarmonyLib;
 using RimWorld;
 using Verse;
@@ -18,6 +19,11 @@ namespace BetterRimAI
     {
         private const int LogCooldownTicks = 600;
         private static readonly Dictionary<int, int> LastLogTickByPawn = new Dictionary<int, int>();
+
+        // RimWorld 1.6 moved path calculation internals again. Keep the mod build-stable by
+        // resolving the current private/public path method dynamically rather than binding to a
+        // compile-time method that may not exist on Pawn_PathFollower in a given 1.6 build.
+        private static readonly MethodInfo GenerateNewPathMethod = AccessTools.Method(typeof(Pawn_PathFollower), "GenerateNewPath");
 
         [HarmonyPostfix]
         public static void Postfix(JobGiver_Work __instance, Pawn pawn, ref ThinkResult __result)
@@ -71,10 +77,7 @@ namespace BetterRimAI
                     return;
                 }
 
-                // RimWorld 1.6 no longer exposes the old PathFinder.FindPath API to mods.
-                // Use the pawn's pather, which delegates to vanilla pathfinding and gives us
-                // the same route the pawn would actually follow.
-                PawnPath path = pawn.pather?.TryFindPath(destination, PathEndMode.Touch);
+                PawnPath path = TryGenerateVanillaPath(pawn, destination);
                 if (path == null || path == PawnPath.NotFound)
                 {
                     return;
@@ -96,6 +99,51 @@ namespace BetterRimAI
             catch (Exception ex)
             {
                 Log.Error("[BetterRimAI] Threat-aware outdoor work check failed for " + pawn + ": " + ex);
+            }
+        }
+
+        private static PawnPath TryGenerateVanillaPath(Pawn pawn, IntVec3 destination)
+        {
+            if (pawn?.pather == null || GenerateNewPathMethod == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                ParameterInfo[] parameters = GenerateNewPathMethod.GetParameters();
+                object[] args;
+
+                if (parameters.Length == 0)
+                {
+                    // GenerateNewPath usually relies on the pather's current destination and is not
+                    // useful to us unless that state has already been initialized for this job.
+                    return null;
+                }
+
+                if (parameters.Length == 2
+                    && parameters[0].ParameterType == typeof(LocalTargetInfo)
+                    && parameters[1].ParameterType == typeof(PathEndMode))
+                {
+                    args = new object[] { new LocalTargetInfo(destination), PathEndMode.Touch };
+                }
+                else if (parameters.Length == 2
+                    && parameters[0].ParameterType == typeof(IntVec3)
+                    && parameters[1].ParameterType == typeof(PathEndMode))
+                {
+                    args = new object[] { destination, PathEndMode.Touch };
+                }
+                else
+                {
+                    return null;
+                }
+
+                return GenerateNewPathMethod.Invoke(pawn.pather, args) as PawnPath;
+            }
+            catch (TargetInvocationException ex)
+            {
+                Log.Warning("[BetterRimAI] Vanilla path generation failed: " + (ex.InnerException ?? ex));
+                return null;
             }
         }
 
