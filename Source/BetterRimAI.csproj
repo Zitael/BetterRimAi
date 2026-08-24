@@ -8,6 +8,8 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <RimWorldDir Condition="'$(RimWorldDir)' == ''">$(RIMWORLD_DIR)</RimWorldDir>
+    <ModStageDir>$(MSBuildProjectDirectory)\..\dist\BetterRimAI</ModStageDir>
+    <ModInstallDir>$(RimWorldDir)\Mods\BetterRimAi</ModInstallDir>
   </PropertyGroup>
 
   <Target Name="ValidateRimWorldDir" BeforeTargets="ResolveReferences">
@@ -37,13 +39,18 @@
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
   </ItemGroup>
 
-  <Target Name="StageMod" AfterTargets="Build">
-    <PropertyGroup>
-      <ModStageDir>$(MSBuildProjectDirectory)\..\dist\BetterRimAI</ModStageDir>
-    </PropertyGroup>
-    <MakeDir Directories="$(ModStageDir)\About;$(ModStageDir)\Assemblies" />
+  <Target Name="StageAndDeployMod" AfterTargets="Build">
+    <MakeDir Directories="$(ModStageDir)\About;$(ModStageDir)\Assemblies;$(ModInstallDir)\About;$(ModInstallDir)\Assemblies" />
+
     <Copy SourceFiles="$(MSBuildProjectDirectory)\..\About\About.xml" DestinationFolder="$(ModStageDir)\About" />
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ModStageDir)\Assemblies" />
     <Copy SourceFiles="$(TargetDir)$(AssemblyName).pdb" DestinationFolder="$(ModStageDir)\Assemblies" Condition="Exists('$(TargetDir)$(AssemblyName).pdb')" />
+
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\..\About\About.xml" DestinationFolder="$(ModInstallDir)\About" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ModInstallDir)\Assemblies" />
+    <Copy SourceFiles="$(TargetDir)$(AssemblyName).pdb" DestinationFolder="$(ModInstallDir)\Assemblies" Condition="Exists('$(TargetDir)$(AssemblyName).pdb')" />
+
+    <Message Importance="high" Text="[BetterRimAI] Staged: $(ModStageDir)" />
+    <Message Importance="high" Text="[BetterRimAI] Deployed to RimWorld: $(ModInstallDir)" />
   </Target>
 </Project>
