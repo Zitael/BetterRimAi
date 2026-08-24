@@ -7,7 +7,16 @@
     <RimWorldDir Condition="'$(RimWorldDir)' == ''">$(RIMWORLD_DIR)</RimWorldDir>
   </PropertyGroup>
 
+  <Target Name="ValidateRimWorldDir" BeforeTargets="ResolveReferences">
+    <Error Condition="'$(RimWorldDir)' == ''" Text="RimWorldDir is not set for tests." />
+    <Error Condition="!Exists('$(RimWorldDir)\RimWorldWin64_Data\Managed\Assembly-CSharp.dll')" Text="Assembly-CSharp.dll was not found under $(RimWorldDir)." />
+  </Target>
+
   <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(RimWorldDir)\RimWorldWin64_Data\Managed\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <ProjectReference Include="..\Source\BetterRimAI.csproj" AdditionalProperties="RimWorldDir=$(RimWorldDir)" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="NUnit" Version="3.14.0" />
