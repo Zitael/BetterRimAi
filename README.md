@@ -25,13 +25,15 @@ By default:
 - a hostile within **15 cells** of the calculated route blocks the automatic outdoor job;
 - a hostile within **20 cells** of the route's Home-area exit blocks the job before the pawn leaves the base;
 - hostiles elsewhere on the map do not matter;
-- drafted pawns, player-forced jobs and colonists whose hostility response is **Attack** bypass this restriction.
+- drafted pawns and colonists whose hostility response is **Attack** bypass this restriction.
 
 The hostile check covers hostile pawns such as raiders, manhunters and shamblers through RimWorld's normal `HostileTo` relationship.
 
 The two radii and the feature toggle are available under **Options → Mod settings → Better Rim AI**.
 
-This version blocks an unsafe automatic trip rather than rewriting RimWorld 1.6's low-level pathfinder. That deliberately keeps the mod lightweight and compatible while still preventing a pawn from opening the base and walking through a hostile corridor.
+This version blocks an unsafe trip rather than rewriting RimWorld 1.6's low-level pathfinder. That deliberately keeps the mod lightweight and compatible while still preventing a pawn from opening the base and walking through a hostile corridor.
+
+Pick Up And Haul is supported optionally through runtime Harmony/reflection compatibility. BetterRimAI does not take a compile-time dependency on Pick Up And Haul and must continue to load when that mod is absent.
 
 ## Requirements
 
@@ -61,6 +63,27 @@ dist\BetterRimAI\
     ├── BetterRimAI.dll
     └── BetterRimAI.pdb
 ```
+
+## Regression tests
+
+The `Tests` project contains NUnit regression tests for compatibility bugs that have already occurred in development, including:
+
+- Harmony prefixes must not depend on parameter names chosen by another mod (`t` vs `thing`, etc.);
+- Pick Up And Haul support must remain optional with no compile-time assembly dependency;
+- a danger block identified by a `thingIDNumber` must still match the lightweight probe job used while scanning candidates;
+- a different Thing must not be accidentally blacklisted;
+- cell-based blocks must still match by job type plus destination.
+
+Run the suite from the repository root:
+
+```powershell
+dotnet test .\Tests\BetterRimAI.Tests.csproj -c Release `
+  -p:RimWorldDir="D:\Progs\Steam\steamapps\common\RimWorld"
+```
+
+`RimWorldDir` is required because the production assembly and a few regression tests compile against RimWorld's `Assembly-CSharp.dll`.
+
+Before merging behavior changes, both `dotnet build` and `dotnet test` should pass.
 
 ## Install locally
 
