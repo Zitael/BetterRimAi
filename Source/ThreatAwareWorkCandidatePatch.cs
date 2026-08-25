@@ -4,14 +4,12 @@ using System.Reflection;
 using HarmonyLib;
 using RimWorld;
 using Verse;
-using Verse.AI;
 
 namespace BetterRimAI
 {
     /// <summary>
     /// Generic compatibility layer for vanilla and modded WorkGiver_Scanner implementations.
-    /// Uses __args rather than concrete argument names because mods are free to rename
-    /// HasJobOnThing(Pawn, Thing, bool) parameters (for example Vehicles uses "thing", not "t").
+    /// This prefix is an extremely hot path, so it must stay allocation-free in the common case.
     /// </summary>
     [HarmonyPatch]
     public static class ThreatAwareBlockedThingCandidatePatch
@@ -54,31 +52,12 @@ namespace BetterRimAI
             if (pawn == null || thing == null)
                 return true;
 
-            BetterRimAISettings settings = BetterRimAIMod.Settings;
-            if (settings == null || !settings.threatAwareOutdoorWork)
-                return true;
-
-            Job probe = JobMaker.MakeJob(JobDefOf.Wait);
-            probe.targetA = thing;
-            bool suppress;
-            try
-            {
-                suppress = ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, probe);
-            }
-            finally
-            {
-                JobMaker.ReturnToPool(probe);
-            }
-
-            if (!suppress)
+            bool forced = __args.Length >= 3 && __args[2] is bool value && value;
+            if (!ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkTarget(pawn, thing, forced))
                 return true;
 
             ThreatAwareBlockDiagnostics.Once(
-                "generic-rejected",
-                pawn,
-                thing,
-                pawn.CurJob,
-                true,
+                "generic-rejected", pawn, thing, pawn.CurJob, true,
                 "method=" + (__originalMethod?.DeclaringType?.FullName ?? "unknown") + "." + (__originalMethod?.Name ?? "unknown"));
 
             __result = false;
