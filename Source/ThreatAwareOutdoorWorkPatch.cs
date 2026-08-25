@@ -55,7 +55,9 @@ namespace BetterRimAI
                 if (pawn == null || !pawn.Spawned || !pawn.IsColonist || pawn.Drafted || pawn.CurJob == null)
                     return true;
 
-                if (IsAttackOverride(pawn))
+                // Explicit player orders are authoritative. BetterRimAI should improve autonomous
+                // decisions, not second-guess a direct right-click order such as Capture/Rescue/Haul.
+                if (IsPlayerForcedJob(pawn.CurJob) || IsAttackOverride(pawn))
                 {
                     ClearBlockedState(pawn.thingIDNumber);
                     return true;
@@ -73,10 +75,6 @@ namespace BetterRimAI
                 if (map == null || home == null)
                     return true;
 
-                // Home is our safe zone. If the pawn is currently pathing to a destination that is
-                // inside Home, nearby hostiles outside the walls must not block that movement. This
-                // also avoids false positives from doorway/boundary cells that may briefly fall
-                // outside the painted Home area while the actual destination is safely inside.
                 if (DestinationIsInsideHome(__instance.Destination, map, home))
                 {
                     ClearBlockedState(state);
@@ -175,7 +173,7 @@ namespace BetterRimAI
 
         public static bool ShouldSuppressWorkJob(Pawn pawn, Job job)
         {
-            if (pawn == null || job == null || pawn.Map == null || pawn.Drafted || IsAttackOverride(pawn))
+            if (pawn == null || job == null || pawn.Map == null || pawn.Drafted || IsPlayerForcedJob(job) || IsAttackOverride(pawn))
                 return false;
 
             int mapId = pawn.Map.uniqueID;
@@ -200,18 +198,19 @@ namespace BetterRimAI
             return false;
         }
 
+        private static bool IsPlayerForcedJob(Job job)
+        {
+            return job != null && job.playerForced;
+        }
+
         private static void CancelUnsafeCurrentJob(Pawn pawn, Pawn_PathFollower pather)
         {
-            if (pawn?.jobs == null)
-                return;
-
+            if (pawn?.jobs == null) return;
             Job unsafeJob = pawn.CurJob;
-            if (unsafeJob == null)
-                return;
+            if (unsafeJob == null) return;
 
             pawn.jobs.jobQueue.RemoveAll(pawn, queuedJob =>
                 ReferenceEquals(queuedJob, unsafeJob) || ShouldSuppressWorkJob(pawn, queuedJob));
-
             pawn.ClearReservationsForJob(unsafeJob);
             pather.StopDead();
             pawn.jobs.EndCurrentJob(JobCondition.Incompletable, startNewJob: false);
@@ -227,22 +226,14 @@ namespace BetterRimAI
 
         private static bool DestinationIsInsideHome(LocalTargetInfo destination, Map map, Area_Home home)
         {
-            if (!destination.IsValid || map == null || home == null)
-                return false;
-
+            if (!destination.IsValid || map == null || home == null) return false;
             IntVec3 cell = destination.Cell;
-            if (cell.IsValid && cell.InBounds(map) && home[cell])
-                return true;
-
-            // For Thing targets, use the Thing's occupied position as a fallback. Some path end
-            // modes point the pather at an adjacent interaction cell while the actual building or
-            // item being used is clearly inside Home.
+            if (cell.IsValid && cell.InBounds(map) && home[cell]) return true;
             if (destination.HasThing && destination.Thing != null)
             {
                 IntVec3 thingCell = destination.Thing.Position;
                 return thingCell.IsValid && thingCell.InBounds(map) && home[thingCell];
             }
-
             return false;
         }
 
@@ -260,51 +251,31 @@ namespace BetterRimAI
                     return;
                 }
             }
-            GlobalBlocks.Add(new GlobalDangerBlock
-            {
-                mapId = map.uniqueID,
-                thingId = thingId,
-                jobDef = jobDef,
-                destination = destination,
-                dangerCell = dangerCell,
-                dangerRadius = dangerRadius
-            });
+            GlobalBlocks.Add(new GlobalDangerBlock { mapId = map.uniqueID, thingId = thingId, jobDef = jobDef, destination = destination, dangerCell = dangerCell, dangerRadius = dangerRadius });
         }
 
         private static bool BlockMatchesJob(GlobalDangerBlock block, int thingId, string jobDef, IntVec3 destination)
         {
-            if (block.thingId >= 0 && thingId >= 0)
-                return block.thingId == thingId;
-
+            if (block.thingId >= 0 && thingId >= 0) return block.thingId == thingId;
             return string.Equals(block.jobDef, jobDef, StringComparison.Ordinal)
-                   && block.destination.IsValid && destination.IsValid
-                   && block.destination == destination;
+                   && block.destination.IsValid && destination.IsValid && block.destination == destination;
         }
 
         private static bool JobMatchesStateBlock(Job job, PathCheckState state)
         {
-            if (job == null || !state.blocked)
-                return false;
-
+            if (job == null || !state.blocked) return false;
             int thingId = GetPrimaryThingId(job);
-            if (state.blockedThingId >= 0 && thingId >= 0)
-                return state.blockedThingId == thingId;
-
-            if (!string.Equals(job.def?.defName, state.blockedJobDef, StringComparison.Ordinal))
-                return false;
-
+            if (state.blockedThingId >= 0 && thingId >= 0) return state.blockedThingId == thingId;
+            if (!string.Equals(job.def?.defName, state.blockedJobDef, StringComparison.Ordinal)) return false;
             return !TryGetJobDestination(job, out IntVec3 destination) || destination == state.blockedDestination;
         }
 
         private static bool ThreatStillNearCell(IntVec3 dangerCell, float dangerRadius, List<Pawn> hostiles)
         {
-            if (!dangerCell.IsValid || dangerRadius <= 0f)
-                return false;
-
+            if (!dangerCell.IsValid || dangerRadius <= 0f) return false;
             float radiusSquared = dangerRadius * dangerRadius;
             for (int i = 0; i < hostiles.Count; i++)
-                if ((dangerCell - hostiles[i].Position).LengthHorizontalSquared <= radiusSquared)
-                    return true;
+                if ((dangerCell - hostiles[i].Position).LengthHorizontalSquared <= radiusSquared) return true;
             return false;
         }
 
@@ -338,22 +309,16 @@ namespace BetterRimAI
             for (int i = 0; i < allPawns.Count; i++)
             {
                 Pawn other = allPawns[i];
-                if (other != pawn && !other.Dead && !other.Downed && other.Spawned && other.HostileTo(pawn))
-                    result.Add(other);
+                if (other != pawn && !other.Dead && !other.Downed && other.Spawned && other.HostileTo(pawn)) result.Add(other);
             }
             return result;
         }
 
-        private static bool TryFindUnsafeThreat(Pawn pawn, List<IntVec3> route, Area_Home home,
-            List<Pawn> hostiles, BetterRimAISettings settings, out Pawn threat, out string reason,
-            out float closestDistance, out IntVec3 dangerCell, out float dangerRadius)
+        private static bool TryFindUnsafeThreat(Pawn pawn, List<IntVec3> route, Area_Home home, List<Pawn> hostiles,
+            BetterRimAISettings settings, out Pawn threat, out string reason, out float closestDistance,
+            out IntVec3 dangerCell, out float dangerRadius)
         {
-            threat = null;
-            reason = null;
-            closestDistance = float.MaxValue;
-            dangerCell = IntVec3.Invalid;
-            dangerRadius = 0f;
-
+            threat = null; reason = null; closestDistance = float.MaxValue; dangerCell = IntVec3.Invalid; dangerRadius = 0f;
             Map map = pawn.Map;
             IntVec3 homeExitCell = IntVec3.Invalid;
             bool previousWasHome = pawn.Position.InBounds(map) && home[pawn.Position];
@@ -361,21 +326,13 @@ namespace BetterRimAI
             {
                 IntVec3 node = route[i];
                 bool nodeIsHome = node.InBounds(map) && home[node];
-                if (previousWasHome && !nodeIsHome)
-                {
-                    homeExitCell = node;
-                    break;
-                }
+                if (previousWasHome && !nodeIsHome) { homeExitCell = node; break; }
                 previousWasHome = nodeIsHome;
             }
 
-            if (homeExitCell.IsValid && TryFindThreatNearCell(homeExitCell, hostiles,
-                    settings.homeExitThreatRadius, out threat, out closestDistance))
+            if (homeExitCell.IsValid && TryFindThreatNearCell(homeExitCell, hostiles, settings.homeExitThreatRadius, out threat, out closestDistance))
             {
-                reason = "hostile near Home-area exit";
-                dangerCell = homeExitCell;
-                dangerRadius = settings.homeExitThreatRadius;
-                return true;
+                reason = "hostile near Home-area exit"; dangerCell = homeExitCell; dangerRadius = settings.homeExitThreatRadius; return true;
             }
 
             float routeRadiusSquared = settings.routeThreatRadius * settings.routeThreatRadius;
@@ -391,35 +348,24 @@ namespace BetterRimAI
                     float distance = (float)Math.Sqrt(distanceSquared);
                     if (distance < closestDistance)
                     {
-                        closestDistance = distance;
-                        threat = hostile;
-                        dangerCell = node;
-                        dangerRadius = settings.routeThreatRadius;
+                        closestDistance = distance; threat = hostile; dangerCell = node; dangerRadius = settings.routeThreatRadius;
                     }
                 }
             }
-
-            if (threat != null)
-            {
-                reason = "hostile near actual remaining path";
-                return true;
-            }
+            if (threat != null) { reason = "hostile near actual remaining path"; return true; }
             return false;
         }
 
-        private static bool TryFindThreatNearCell(IntVec3 cell, List<Pawn> hostiles, float radius,
-            out Pawn threat, out float closestDistance)
+        private static bool TryFindThreatNearCell(IntVec3 cell, List<Pawn> hostiles, float radius, out Pawn threat, out float closestDistance)
         {
-            threat = null;
-            closestDistance = float.MaxValue;
+            threat = null; closestDistance = float.MaxValue;
             float radiusSquared = radius * radius;
             for (int i = 0; i < hostiles.Count; i++)
             {
                 float distanceSquared = (cell - hostiles[i].Position).LengthHorizontalSquared;
                 if (distanceSquared <= radiusSquared && distanceSquared < closestDistance * closestDistance)
                 {
-                    closestDistance = (float)Math.Sqrt(distanceSquared);
-                    threat = hostiles[i];
+                    closestDistance = (float)Math.Sqrt(distanceSquared); threat = hostiles[i];
                 }
             }
             return threat != null;
@@ -427,22 +373,12 @@ namespace BetterRimAI
 
         private static bool TryGetJobDestination(Job job, out IntVec3 destination)
         {
-            if (job != null && job.targetA.IsValid)
-            {
-                destination = job.targetA.Cell;
-                return destination.IsValid;
-            }
-            if (job != null && job.targetB.IsValid)
-            {
-                destination = job.targetB.Cell;
-                return destination.IsValid;
-            }
-            destination = IntVec3.Invalid;
-            return false;
+            if (job != null && job.targetA.IsValid) { destination = job.targetA.Cell; return destination.IsValid; }
+            if (job != null && job.targetB.IsValid) { destination = job.targetB.Cell; return destination.IsValid; }
+            destination = IntVec3.Invalid; return false;
         }
 
-        private static void LogDecision(Pawn pawn, IntVec3 destination, Pawn threat, string reason,
-            float closestDistance, BetterRimAISettings settings)
+        private static void LogDecision(Pawn pawn, IntVec3 destination, Pawn threat, string reason, float closestDistance, BetterRimAISettings settings)
         {
             if (!settings.threatDebugLogging) return;
             int tick = Find.TickManager?.TicksGame ?? 0;
