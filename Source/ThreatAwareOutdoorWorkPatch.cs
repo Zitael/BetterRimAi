@@ -73,6 +73,16 @@ namespace BetterRimAI
                 if (map == null || home == null)
                     return true;
 
+                // Home is our safe zone. If the pawn is currently pathing to a destination that is
+                // inside Home, nearby hostiles outside the walls must not block that movement. This
+                // also avoids false positives from doorway/boundary cells that may briefly fall
+                // outside the painted Home area while the actual destination is safely inside.
+                if (DestinationIsInsideHome(__instance.Destination, map, home))
+                {
+                    ClearBlockedState(state);
+                    return true;
+                }
+
                 if (state.blocked && JobMatchesStateBlock(pawn.CurJob, state))
                 {
                     List<Pawn> currentHostiles = GetRelevantHostiles(pawn, map);
@@ -199,19 +209,12 @@ namespace BetterRimAI
             if (unsafeJob == null)
                 return;
 
-            // RimWorld 1.6 EndCurrentJob normally runs the current driver's finalizer and then
-            // immediately consumes queued jobs. Hauling can therefore turn our cancellation into
-            // UnloadYourHauledInventory -> the same queued HaulToInventory again. Remove unsafe
-            // queued copies first, then end WITHOUT starting a finalizer/next job. Afterwards ask
-            // the normal think tree for fresh work.
             pawn.jobs.jobQueue.RemoveAll(pawn, queuedJob =>
                 ReferenceEquals(queuedJob, unsafeJob) || ShouldSuppressWorkJob(pawn, queuedJob));
 
             pawn.ClearReservationsForJob(unsafeJob);
             pather.StopDead();
             pawn.jobs.EndCurrentJob(JobCondition.Incompletable, startNewJob: false);
-
-            // curJob is now genuinely clear, so vanilla can choose another safe candidate.
             pawn.jobs.CheckForJobOverride();
         }
 
@@ -220,6 +223,27 @@ namespace BetterRimAI
             return pawn.playerSettings != null
                    && pawn.playerSettings.UsesConfigurableHostilityResponse
                    && pawn.playerSettings.hostilityResponse == HostilityResponseMode.Attack;
+        }
+
+        private static bool DestinationIsInsideHome(LocalTargetInfo destination, Map map, Area_Home home)
+        {
+            if (!destination.IsValid || map == null || home == null)
+                return false;
+
+            IntVec3 cell = destination.Cell;
+            if (cell.IsValid && cell.InBounds(map) && home[cell])
+                return true;
+
+            // For Thing targets, use the Thing's occupied position as a fallback. Some path end
+            // modes point the pather at an adjacent interaction cell while the actual building or
+            // item being used is clearly inside Home.
+            if (destination.HasThing && destination.Thing != null)
+            {
+                IntVec3 thingCell = destination.Thing.Position;
+                return thingCell.IsValid && thingCell.InBounds(map) && home[thingCell];
+            }
+
+            return false;
         }
 
         private static void RememberGlobalBlock(Map map, Job job, IntVec3 destination, IntVec3 dangerCell, float dangerRadius)
