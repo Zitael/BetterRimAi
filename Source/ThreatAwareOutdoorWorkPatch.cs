@@ -12,12 +12,12 @@ namespace BetterRimAI
     public static class ThreatAwareOutdoorWorkPatch
     {
         private const int LogCooldownTicks = 600;
-        private const int MovingThreatRecheckTicks = 30;
+        private const int MovingThreatRecheckTicks = 120;
+        private const int HostileCacheTicks = 60;
 
         private sealed class PathCheckState
         {
             public PawnPath path;
-            public IntVec3 nextCell = IntVec3.Invalid;
             public int lastCheckTick = -999999;
             public bool blocked;
             public IntVec3 blockedDestination = IntVec3.Invalid;
@@ -37,9 +37,17 @@ namespace BetterRimAI
             public float dangerRadius;
         }
 
+        private sealed class HostileCacheEntry
+        {
+            public int tick = -999999;
+            public readonly List<Pawn> hostiles = new List<Pawn>();
+        }
+
         private static readonly Dictionary<int, int> LastLogTickByPawn = new Dictionary<int, int>();
         private static readonly Dictionary<int, PathCheckState> CheckStateByPawn = new Dictionary<int, PathCheckState>();
+        private static readonly Dictionary<long, HostileCacheEntry> HostileCache = new Dictionary<long, HostileCacheEntry>();
         private static readonly List<GlobalDangerBlock> GlobalBlocks = new List<GlobalDangerBlock>();
+        private static readonly HashSet<long> BlockedThingKeys = new HashSet<long>();
         private static readonly List<IntVec3> RemainingPathCells = new List<IntVec3>(256);
 
         [HarmonyPrefix]
@@ -55,8 +63,6 @@ namespace BetterRimAI
                 if (pawn == null || !pawn.Spawned || !pawn.IsColonist || pawn.Drafted || pawn.CurJob == null)
                     return true;
 
-                // Explicit player orders are authoritative. BetterRimAI should improve autonomous
-                // decisions, not second-guess a direct right-click order such as Capture/Rescue/Haul.
                 if (IsPlayerForcedJob(pawn.CurJob) || IsAttackOverride(pawn))
                 {
                     ClearBlockedState(pawn.thingIDNumber);
@@ -81,15 +87,13 @@ namespace BetterRimAI
                     return true;
                 }
 
+                // If the same blocked job somehow got restarted, kill it immediately. Do not rescan
+                // the map/path here; the global registry will revalidate the threat when AI proposes
+                // the job again. This prevents a blocked job from becoming a per-tick hot loop.
                 if (state.blocked && JobMatchesStateBlock(pawn.CurJob, state))
                 {
-                    List<Pawn> currentHostiles = GetRelevantHostiles(pawn, map);
-                    if (ThreatStillNearCell(state.blockedDangerCell, state.blockedDangerRadius, currentHostiles))
-                    {
-                        CancelUnsafeCurrentJob(pawn, __instance);
-                        return false;
-                    }
-                    ClearBlockedState(state);
+                    CancelUnsafeCurrentJob(pawn, __instance);
+                    return false;
                 }
 
                 PawnPath path = __instance.curPath;
@@ -98,13 +102,14 @@ namespace BetterRimAI
 
                 int tick = Find.TickManager?.TicksGame ?? 0;
                 bool newPath = !ReferenceEquals(state.path, path);
-                bool newCell = state.nextCell != __instance.nextCell;
                 bool timedRecheck = tick - state.lastCheckTick >= MovingThreatRecheckTicks;
-                if (!newPath && !newCell && !timedRecheck)
+
+                // The previous implementation also re-ran the full path/threat scan on every next
+                // path cell. That made PatherTick extremely expensive during raids/manhunter events.
+                if (!newPath && !timedRecheck)
                     return true;
 
                 state.path = path;
-                state.nextCell = __instance.nextCell;
                 state.lastCheckTick = tick;
 
                 RemainingPathCells.Clear();
@@ -132,7 +137,7 @@ namespace BetterRimAI
                     return true;
                 }
 
-                List<Pawn> hostiles = GetRelevantHostiles(pawn, map);
+                List<Pawn> hostiles = GetRelevantHostilesCached(pawn, map, tick);
                 if (hostiles.Count == 0)
                 {
                     ClearBlockedState(state);
@@ -171,6 +176,14 @@ namespace BetterRimAI
             }
         }
 
+        public static bool CouldBeBlockedThing(Pawn pawn, Thing thing, bool forced)
+        {
+            if (forced || pawn == null || thing == null || pawn.Map == null || pawn.Drafted || IsAttackOverride(pawn))
+                return false;
+
+            return BlockedThingKeys.Contains(MakeThingKey(pawn.Map.uniqueID, thing.thingIDNumber));
+        }
+
         public static bool ShouldSuppressWorkJob(Pawn pawn, Job job)
         {
             if (pawn == null || job == null || pawn.Map == null || pawn.Drafted || IsPlayerForcedJob(job) || IsAttackOverride(pawn))
@@ -181,16 +194,20 @@ namespace BetterRimAI
             string jobDef = job.def?.defName;
             TryGetJobDestination(job, out IntVec3 destination);
 
+            if (thingId >= 0 && !BlockedThingKeys.Contains(MakeThingKey(mapId, thingId)))
+                return false;
+
+            int tick = Find.TickManager?.TicksGame ?? 0;
             for (int i = GlobalBlocks.Count - 1; i >= 0; i--)
             {
                 GlobalDangerBlock block = GlobalBlocks[i];
                 if (block.mapId != mapId || !BlockMatchesJob(block, thingId, jobDef, destination))
                     continue;
 
-                List<Pawn> hostiles = GetRelevantHostiles(pawn, pawn.Map);
+                List<Pawn> hostiles = GetRelevantHostilesCached(pawn, pawn.Map, tick);
                 if (!ThreatStillNearCell(block.dangerCell, block.dangerRadius, hostiles))
                 {
-                    GlobalBlocks.RemoveAt(i);
+                    RemoveGlobalBlockAt(i);
                     continue;
                 }
                 return true;
@@ -248,10 +265,43 @@ namespace BetterRimAI
                 {
                     existing.dangerCell = dangerCell;
                     existing.dangerRadius = dangerRadius;
+                    if (thingId >= 0) BlockedThingKeys.Add(MakeThingKey(map.uniqueID, thingId));
                     return;
                 }
             }
-            GlobalBlocks.Add(new GlobalDangerBlock { mapId = map.uniqueID, thingId = thingId, jobDef = jobDef, destination = destination, dangerCell = dangerCell, dangerRadius = dangerRadius });
+
+            GlobalBlocks.Add(new GlobalDangerBlock
+            {
+                mapId = map.uniqueID,
+                thingId = thingId,
+                jobDef = jobDef,
+                destination = destination,
+                dangerCell = dangerCell,
+                dangerRadius = dangerRadius
+            });
+
+            if (thingId >= 0)
+                BlockedThingKeys.Add(MakeThingKey(map.uniqueID, thingId));
+        }
+
+        private static void RemoveGlobalBlockAt(int index)
+        {
+            GlobalDangerBlock removed = GlobalBlocks[index];
+            GlobalBlocks.RemoveAt(index);
+            if (removed.thingId < 0) return;
+
+            long key = MakeThingKey(removed.mapId, removed.thingId);
+            for (int i = 0; i < GlobalBlocks.Count; i++)
+            {
+                if (GlobalBlocks[i].mapId == removed.mapId && GlobalBlocks[i].thingId == removed.thingId)
+                    return;
+            }
+            BlockedThingKeys.Remove(key);
+        }
+
+        private static long MakeThingKey(int mapId, int thingId)
+        {
+            return ((long)mapId << 32) | (uint)thingId;
         }
 
         private static bool BlockMatchesJob(GlobalDangerBlock block, int thingId, string jobDef, IntVec3 destination)
@@ -302,16 +352,28 @@ namespace BetterRimAI
             state.blockedThingId = -1;
         }
 
-        private static List<Pawn> GetRelevantHostiles(Pawn pawn, Map map)
+        private static List<Pawn> GetRelevantHostilesCached(Pawn pawn, Map map, int tick)
         {
-            List<Pawn> result = new List<Pawn>();
+            long key = ((long)map.uniqueID << 32) | (uint)pawn.thingIDNumber;
+            if (!HostileCache.TryGetValue(key, out HostileCacheEntry entry))
+            {
+                entry = new HostileCacheEntry();
+                HostileCache[key] = entry;
+            }
+
+            if (tick - entry.tick < HostileCacheTicks)
+                return entry.hostiles;
+
+            entry.tick = tick;
+            entry.hostiles.Clear();
             IReadOnlyList<Pawn> allPawns = map.mapPawns.AllPawnsSpawned;
             for (int i = 0; i < allPawns.Count; i++)
             {
                 Pawn other = allPawns[i];
-                if (other != pawn && !other.Dead && !other.Downed && other.Spawned && other.HostileTo(pawn)) result.Add(other);
+                if (other != pawn && !other.Dead && !other.Downed && other.Spawned && other.HostileTo(pawn))
+                    entry.hostiles.Add(other);
             }
-            return result;
+            return entry.hostiles;
         }
 
         private static bool TryFindUnsafeThreat(Pawn pawn, List<IntVec3> route, Area_Home home, List<Pawn> hostiles,
@@ -336,7 +398,7 @@ namespace BetterRimAI
             }
 
             float routeRadiusSquared = settings.routeThreatRadius * settings.routeThreatRadius;
-            for (int i = 0; i < route.Count; i += 2)
+            for (int i = 0; i < route.Count; i += 3)
             {
                 IntVec3 node = route[i];
                 if (!node.InBounds(map) || home[node]) continue;
