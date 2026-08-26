@@ -7,18 +7,29 @@ using Verse.AI;
 
 namespace BetterRimAI
 {
-    [HarmonyPatch(typeof(Pawn_PathFollower), nameof(Pawn_PathFollower.PatherTick))]
+    /// <summary>
+    /// Threat-aware movement guard.
+    ///
+    /// Important performance rule: do not patch PatherTick here. PatherTick runs many times per
+    /// frame for every moving pawn and even a cheap prefix becomes expensive in a large colony.
+    /// TryEnterNextPathCell runs when a pawn is actually about to advance to another path cell,
+    /// which is the right place to do route safety checks and still lets us stop the pawn before
+    /// it leaves Home or walks into a hostile.
+    /// </summary>
+    [HarmonyPatch(typeof(Pawn_PathFollower), "TryEnterNextPathCell")]
     [HarmonyPriority(Priority.First)]
     public static class ThreatAwareOutdoorWorkPatch
     {
         private const int LogCooldownTicks = 600;
         private const int MovingThreatRecheckTicks = 120;
+        private const int CellsBetweenThreatChecks = 6;
         private const int HostileCacheTicks = 60;
 
         private sealed class PathCheckState
         {
             public PawnPath path;
             public int lastCheckTick = -999999;
+            public int cellsSinceCheck = CellsBetweenThreatChecks;
             public bool blocked;
             public IntVec3 blockedDestination = IntVec3.Invalid;
             public IntVec3 blockedDangerCell = IntVec3.Invalid;
@@ -81,15 +92,17 @@ namespace BetterRimAI
                 if (map == null || home == null)
                     return true;
 
+                // Home itself is always safe for this feature. A hostile standing behind a wall
+                // near a paste dispenser/bed/etc. must not prevent normal indoor jobs.
                 if (DestinationIsInsideHome(__instance.Destination, map, home))
                 {
                     ClearBlockedState(state);
                     return true;
                 }
 
-                // If the same blocked job somehow got restarted, kill it immediately. Do not rescan
-                // the map/path here; the global registry will revalidate the threat when AI proposes
-                // the job again. This prevents a blocked job from becoming a per-tick hot loop.
+                // The universal ThinkNode/WorkGiver filters should normally prevent a blocked job
+                // from restarting. If a mod bypasses those filters, stop the repeated job here
+                // before the pawn enters another path cell.
                 if (state.blocked && JobMatchesStateBlock(pawn.CurJob, state))
                 {
                     CancelUnsafeCurrentJob(pawn, __instance);
@@ -102,15 +115,23 @@ namespace BetterRimAI
 
                 int tick = Find.TickManager?.TicksGame ?? 0;
                 bool newPath = !ReferenceEquals(state.path, path);
-                bool timedRecheck = tick - state.lastCheckTick >= MovingThreatRecheckTicks;
+                if (newPath)
+                {
+                    state.path = path;
+                    state.cellsSinceCheck = CellsBetweenThreatChecks;
+                }
+                else
+                {
+                    state.cellsSinceCheck++;
+                }
 
-                // The previous implementation also re-ran the full path/threat scan on every next
-                // path cell. That made PatherTick extremely expensive during raids/manhunter events.
-                if (!newPath && !timedRecheck)
+                bool cellRecheck = state.cellsSinceCheck >= CellsBetweenThreatChecks;
+                bool timedRecheck = tick - state.lastCheckTick >= MovingThreatRecheckTicks;
+                if (!newPath && !cellRecheck && !timedRecheck)
                     return true;
 
-                state.path = path;
                 state.lastCheckTick = tick;
+                state.cellsSinceCheck = 0;
 
                 RemainingPathCells.Clear();
                 path.PeekNextCells(path.NodesLeftCount, RemainingPathCells, 0);
