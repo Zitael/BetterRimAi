@@ -1,6 +1,9 @@
 using System;
+using System.Linq;
 using System.Reflection;
+using HarmonyLib;
 using NUnit.Framework;
+using Verse.AI;
 
 namespace BetterRimAI.Tests
 {
@@ -29,15 +32,30 @@ namespace BetterRimAI.Tests
         }
 
         [Test]
-        public void MovingThreatRecheck_IsThrottled()
+        public void ThreatGuard_DoesNotPatchPatherTick()
+        {
+            HarmonyPatch[] patches = typeof(ThreatAwareOutdoorWorkPatch)
+                .GetCustomAttributes(typeof(HarmonyPatch), inherit: false)
+                .Cast<HarmonyPatch>()
+                .ToArray();
+
+            string combined = string.Join(" ", patches.Select(p => p.info?.methodName ?? string.Empty));
+            Assert.That(combined, Does.Not.Contain(nameof(Pawn_PathFollower.PatherTick)),
+                "PatherTick runs dozens/hundreds of times per frame; threat guard must stay off that hot path.");
+            Assert.That(combined, Does.Contain("TryEnterNextPathCell"),
+                "Threat guard should run when a pawn actually advances to another path cell.");
+        }
+
+        [Test]
+        public void MovingThreatRecheck_IsThrottledByCells()
         {
             FieldInfo field = typeof(ThreatAwareOutdoorWorkPatch)
-                .GetField("MovingThreatRecheckTicks", BindingFlags.NonPublic | BindingFlags.Static);
+                .GetField("CellsBetweenThreatChecks", BindingFlags.NonPublic | BindingFlags.Static);
 
             Assert.That(field, Is.Not.Null);
-            int ticks = (int)field.GetRawConstantValue();
-            Assert.That(ticks, Is.GreaterThanOrEqualTo(120),
-                "Full route/threat scans must not run every path cell or every few ticks.");
+            int cells = (int)field.GetRawConstantValue();
+            Assert.That(cells, Is.GreaterThanOrEqualTo(4),
+                "Full route/threat scans must not run on every path cell.");
         }
     }
 }
