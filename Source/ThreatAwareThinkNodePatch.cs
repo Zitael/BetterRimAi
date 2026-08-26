@@ -8,10 +8,8 @@ namespace BetterRimAI
     /// Universal fallback for autonomous jobs that do not come from WorkGiver_Scanner
     /// (needs, hygiene mods, recreation mods, custom JobGivers, etc.).
     ///
-    /// ThinkNode_JobGiver.TryIssueJobPackage is the common adapter from TryGiveJob() to a
-    /// ThinkResult. Returning NoJob here is important: the parent priority node can then
-    /// continue to its next child instead of letting the pawn start/cancel the same unsafe
-    /// job forever.
+    /// Returning NoJob lets the parent priority node continue to another activity instead of
+    /// immediately restarting an unsafe outdoor job.
     /// </summary>
     [HarmonyPatch(typeof(ThinkNode_JobGiver), nameof(ThinkNode_JobGiver.TryIssueJobPackage))]
     [HarmonyPriority(Priority.First)]
@@ -27,14 +25,24 @@ namespace BetterRimAI
             if (job == null || job.playerForced)
                 return;
 
-            if (!ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, job))
+            bool retryCooldown = ThreatAwareOutdoorRetryCooldown.ShouldSuppressOutdoorRetry(pawn, job);
+            bool blockedTarget = !retryCooldown && ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, job);
+            if (!retryCooldown && !blockedTarget)
                 return;
 
-            if (BetterRimAIMod.Settings?.threatDebugLogging == true)
-            {
-                Log.Message($"[BetterRimAI] {pawn.LabelShort}: suppressed autonomous {job.def?.defName ?? "job"} " +
-                            "at ThinkNode_JobGiver so AI can choose another job.");
-            }
+            Thing thing = null;
+            if (job.targetA.HasThing) thing = job.targetA.Thing;
+            else if (job.targetB.HasThing) thing = job.targetB.Thing;
+
+            ThreatAwareBlockDiagnostics.Once(
+                retryCooldown ? "thinknode-outdoor-cooldown" : "thinknode-blocked-target",
+                pawn,
+                thing,
+                job,
+                true,
+                retryCooldown
+                    ? "temporary backoff after unsafe outdoor cancellation"
+                    : "known unsafe target");
 
             __result = ThinkResult.NoJob;
         }
