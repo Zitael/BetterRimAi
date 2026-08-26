@@ -17,10 +17,30 @@ namespace BetterRimAI.Tests
             Assert.That(end, Is.GreaterThan(start));
             string method = source.Substring(start, end - start);
 
-            Assert.That(method.Contains("CheckForJobOverride()"), Is.False,
+            // Strip comments before checking executable source. The method intentionally documents
+            // why CheckForJobOverride must NOT be called here, so a raw substring check produces a
+            // false positive on the explanatory comment itself.
+            string executable = StripLineComments(method);
+
+            Assert.That(executable.Contains("CheckForJobOverride()"), Is.False,
                 "Calling CheckForJobOverride from TryEnterNextPathCell re-enters AI/pathing and can make pawns bounce between cells.");
-            Assert.That(method.Contains("EndCurrentJob(JobCondition.Incompletable, startNewJob: true)"), Is.True,
+            Assert.That(executable.Contains("EndCurrentJob(JobCondition.Incompletable, startNewJob: true)"), Is.True,
                 "Unsafe cancellation should hand replacement-job selection back to Pawn_JobTracker normally.");
+        }
+
+        private static string StripLineComments(string source)
+        {
+            using (StringReader reader = new StringReader(source))
+            using (StringWriter writer = new StringWriter())
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    int comment = line.IndexOf("//", StringComparison.Ordinal);
+                    writer.WriteLine(comment >= 0 ? line.Substring(0, comment) : line);
+                }
+                return writer.ToString();
+            }
         }
 
         private static string FindSourceFile(string fileName)
