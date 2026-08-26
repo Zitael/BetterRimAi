@@ -92,17 +92,12 @@ namespace BetterRimAI
                 if (map == null || home == null)
                     return true;
 
-                // Home itself is always safe for this feature. A hostile standing behind a wall
-                // near a paste dispenser/bed/etc. must not prevent normal indoor jobs.
                 if (DestinationIsInsideHome(__instance.Destination, map, home))
                 {
                     ClearBlockedState(state);
                     return true;
                 }
 
-                // The universal ThinkNode/WorkGiver filters should normally prevent a blocked job
-                // from restarting. If a mod bypasses those filters, stop the repeated job here
-                // before the pawn enters another path cell.
                 if (state.blocked && JobMatchesStateBlock(pawn.CurJob, state))
                 {
                     CancelUnsafeCurrentJob(pawn, __instance);
@@ -251,8 +246,16 @@ namespace BetterRimAI
                 ReferenceEquals(queuedJob, unsafeJob) || ShouldSuppressWorkJob(pawn, queuedJob));
             pawn.ClearReservationsForJob(unsafeJob);
             pather.StopDead();
-            pawn.jobs.EndCurrentJob(JobCondition.Incompletable, startNewJob: false);
-            pawn.jobs.CheckForJobOverride();
+
+            // Do not call CheckForJobOverride() here. We are inside Pawn_PathFollower's movement
+            // transition, and re-entering the think tree from that call can install a new path/job
+            // before TryEnterNextPathCell has unwound. That manifested as pawns visibly bouncing
+            // between two cells while an unsafe job was repeatedly cancelled/reissued.
+            // EndCurrentJob(startNewJob: true) lets RimWorld finish the current job transition in
+            // its normal job-tracker path. ThreatAwareOutdoorRetryCooldown is already active (its
+            // prefix runs before this method), so autonomous outdoor retries are filtered while
+            // RimWorld chooses the replacement job.
+            pawn.jobs.EndCurrentJob(JobCondition.Incompletable, startNewJob: true);
         }
 
         private static bool IsAttackOverride(Pawn pawn)
