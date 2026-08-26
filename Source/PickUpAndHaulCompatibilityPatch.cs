@@ -32,9 +32,7 @@ namespace BetterRimAI
             BetterRimAISettings settings = BetterRimAIMod.Settings;
             if (settings == null || !settings.threatAwareOutdoorWork) return true;
 
-            // PUAH scans many haulable things. Do zero Job allocation unless this exact Thing is
-            // already in BetterRimAI's blocked-target list.
-            if (!ThreatAwareBlockFastLookup.CouldBeBlocked(pawn, thing, forced)) return true;
+            if (!ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, thing, forced)) return true;
 
             Job probe = JobMaker.MakeJob(JobDefOf.Wait);
             probe.targetA = thing;
