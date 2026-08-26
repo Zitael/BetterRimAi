@@ -4,7 +4,6 @@ using System.Reflection;
 using HarmonyLib;
 using RimWorld;
 using Verse;
-using Verse.AI;
 
 namespace BetterRimAI
 {
@@ -36,9 +35,10 @@ namespace BetterRimAI
 
             bool forced = __args.Length >= 3 && __args[2] is bool value && value;
 
-            // HasJobOnThing is called enormously often. Almost every candidate is unrelated to our
-            // tiny blocked-target list, so reject those here without allocating a probe Job.
-            if (!ThreatAwareBlockFastLookup.CouldBeBlocked(pawn, thing, forced)) return true;
+            // This method can run hundreds of times per frame. The common case must remain O(1),
+            // allocation-free, and reflection-free. Full threat validation only runs for a Thing
+            // already present in BetterRimAI's tiny blocked-target set.
+            if (!ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, thing, forced)) return true;
 
             Job probe = JobMaker.MakeJob(JobDefOf.Wait);
             probe.targetA = thing;
