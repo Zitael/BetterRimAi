@@ -8,13 +8,12 @@ using Verse.AI;
 namespace BetterRimAI
 {
     /// <summary>
-    /// Threat-aware movement guard.
+    /// Threat-aware movement guard for player-controlled non-animal pawns.
     ///
-    /// Important performance rule: do not patch PatherTick here. PatherTick runs many times per
-    /// frame for every moving pawn and even a cheap prefix becomes expensive in a large colony.
-    /// TryEnterNextPathCell runs when a pawn is actually about to advance to another path cell,
-    /// which is the right place to do route safety checks and still lets us stop the pawn before
-    /// it leaves Home or walks into a hostile.
+    /// Performance rule: do not patch PatherTick. TryEnterNextPathCell runs only when a pawn is
+    /// actually about to advance to another path cell. If a route is unsafe we stop movement here,
+    /// then defer job cancellation to Pawn_JobTracker's next tick so job/path setup is never
+    /// re-entered from inside the path follower.
     /// </summary>
     [HarmonyPatch(typeof(Pawn_PathFollower), "TryEnterNextPathCell")]
     [HarmonyPriority(Priority.First)]
@@ -71,7 +70,7 @@ namespace BetterRimAI
                 if (settings == null || !settings.threatAwareOutdoorWork)
                     return true;
 
-                if (pawn == null || !pawn.Spawned || !pawn.IsColonist || pawn.Drafted || pawn.CurJob == null)
+                if (pawn == null || !pawn.Spawned || !IsProtectedPlayerPawn(pawn) || pawn.Drafted || pawn.CurJob == null)
                     return true;
 
                 if (IsPlayerForcedJob(pawn.CurJob) || IsAttackOverride(pawn))
@@ -92,12 +91,15 @@ namespace BetterRimAI
                 if (map == null || home == null)
                     return true;
 
+                // Home plus completely enclosed unpainted pockets are treated as protected base.
                 if (DestinationIsInsideHome(__instance.Destination, map, home))
                 {
                     ClearBlockedState(state);
                     return true;
                 }
 
+                // A mod can bypass ThinkNode/WorkGiver filtering and restart an already blocked job.
+                // Stop movement immediately, but do not end the job from inside pathing.
                 if (state.blocked && JobMatchesStateBlock(pawn.CurJob, state))
                 {
                     CancelUnsafeCurrentJob(pawn, __instance);
@@ -133,21 +135,21 @@ namespace BetterRimAI
                 if (RemainingPathCells.Count == 0)
                     return true;
 
-                bool leavesHome = !home[pawn.Position];
-                if (!leavesHome)
+                bool leavesProtectedBase = !ThreatAwareHomeSafety.IsSafeCell(map, home, pawn.Position);
+                if (!leavesProtectedBase)
                 {
                     for (int i = 0; i < RemainingPathCells.Count; i++)
                     {
                         IntVec3 cell = RemainingPathCells[i];
-                        if (cell.InBounds(map) && !home[cell])
+                        if (cell.InBounds(map) && !ThreatAwareHomeSafety.IsSafeCell(map, home, cell))
                         {
-                            leavesHome = true;
+                            leavesProtectedBase = true;
                             break;
                         }
                     }
                 }
 
-                if (!leavesHome)
+                if (!leavesProtectedBase)
                 {
                     ClearBlockedState(state);
                     return true;
@@ -192,9 +194,20 @@ namespace BetterRimAI
             }
         }
 
+        public static bool IsProtectedPlayerPawn(Pawn pawn)
+        {
+            if (pawn == null || pawn.Faction != Faction.OfPlayer || pawn.RaceProps == null)
+                return false;
+
+            // Tame animals have the player faction too, but this feature is intended for colonists,
+            // player mechs/militors and modded drones, not ordinary colony animals.
+            return !pawn.RaceProps.Animal;
+        }
+
         public static bool CouldBeBlockedThing(Pawn pawn, Thing thing, bool forced)
         {
-            if (forced || pawn == null || thing == null || pawn.Map == null || pawn.Drafted || IsAttackOverride(pawn))
+            if (forced || pawn == null || thing == null || pawn.Map == null || !IsProtectedPlayerPawn(pawn)
+                || pawn.Drafted || IsAttackOverride(pawn))
                 return false;
 
             return BlockedThingKeys.Contains(MakeThingKey(pawn.Map.uniqueID, thing.thingIDNumber));
@@ -202,7 +215,8 @@ namespace BetterRimAI
 
         public static bool ShouldSuppressWorkJob(Pawn pawn, Job job)
         {
-            if (pawn == null || job == null || pawn.Map == null || pawn.Drafted || IsPlayerForcedJob(job) || IsAttackOverride(pawn))
+            if (pawn == null || job == null || pawn.Map == null || !IsProtectedPlayerPawn(pawn)
+                || pawn.Drafted || IsPlayerForcedJob(job) || IsAttackOverride(pawn))
                 return false;
 
             int mapId = pawn.Map.uniqueID;
@@ -242,20 +256,10 @@ namespace BetterRimAI
             Job unsafeJob = pawn.CurJob;
             if (unsafeJob == null) return;
 
-            pawn.jobs.jobQueue.RemoveAll(pawn, queuedJob =>
-                ReferenceEquals(queuedJob, unsafeJob) || ShouldSuppressWorkJob(pawn, queuedJob));
-            pawn.ClearReservationsForJob(unsafeJob);
+            // Critical: never EndCurrentJob/CheckForJobOverride while TryEnterNextPathCell is on
+            // the stack. Stop movement now and let Pawn_JobTracker cancel the job on its next tick.
             pather.StopDead();
-
-            // Do not call CheckForJobOverride() here. We are inside Pawn_PathFollower's movement
-            // transition, and re-entering the think tree from that call can install a new path/job
-            // before TryEnterNextPathCell has unwound. That manifested as pawns visibly bouncing
-            // between two cells while an unsafe job was repeatedly cancelled/reissued.
-            // EndCurrentJob(startNewJob: true) lets RimWorld finish the current job transition in
-            // its normal job-tracker path. ThreatAwareOutdoorRetryCooldown is already active (its
-            // prefix runs before this method), so autonomous outdoor retries are filtered while
-            // RimWorld chooses the replacement job.
-            pawn.jobs.EndCurrentJob(JobCondition.Incompletable, startNewJob: true);
+            ThreatAwarePendingCancellation.Schedule(pawn, unsafeJob);
         }
 
         private static bool IsAttackOverride(Pawn pawn)
@@ -269,11 +273,12 @@ namespace BetterRimAI
         {
             if (!destination.IsValid || map == null || home == null) return false;
             IntVec3 cell = destination.Cell;
-            if (cell.IsValid && cell.InBounds(map) && home[cell]) return true;
+            if (cell.IsValid && cell.InBounds(map) && ThreatAwareHomeSafety.IsSafeCell(map, home, cell)) return true;
             if (destination.HasThing && destination.Thing != null)
             {
                 IntVec3 thingCell = destination.Thing.Position;
-                return thingCell.IsValid && thingCell.InBounds(map) && home[thingCell];
+                return thingCell.IsValid && thingCell.InBounds(map)
+                    && ThreatAwareHomeSafety.IsSafeCell(map, home, thingCell);
             }
             return false;
         }
@@ -404,54 +409,82 @@ namespace BetterRimAI
             BetterRimAISettings settings, out Pawn threat, out string reason, out float closestDistance,
             out IntVec3 dangerCell, out float dangerRadius)
         {
-            threat = null; reason = null; closestDistance = float.MaxValue; dangerCell = IntVec3.Invalid; dangerRadius = 0f;
+            threat = null;
+            reason = null;
+            closestDistance = float.MaxValue;
+            dangerCell = IntVec3.Invalid;
+            dangerRadius = 0f;
+
             Map map = pawn.Map;
             IntVec3 homeExitCell = IntVec3.Invalid;
-            bool previousWasHome = pawn.Position.InBounds(map) && home[pawn.Position];
+            bool previousWasHome = pawn.Position.InBounds(map)
+                && ThreatAwareHomeSafety.IsSafeCell(map, home, pawn.Position);
+
             for (int i = 0; i < route.Count; i++)
             {
                 IntVec3 node = route[i];
-                bool nodeIsHome = node.InBounds(map) && home[node];
-                if (previousWasHome && !nodeIsHome) { homeExitCell = node; break; }
+                bool nodeIsHome = node.InBounds(map) && ThreatAwareHomeSafety.IsSafeCell(map, home, node);
+                if (previousWasHome && !nodeIsHome)
+                {
+                    homeExitCell = node;
+                    break;
+                }
                 previousWasHome = nodeIsHome;
             }
 
-            if (homeExitCell.IsValid && TryFindThreatNearCell(homeExitCell, hostiles, settings.homeExitThreatRadius, out threat, out closestDistance))
+            if (homeExitCell.IsValid
+                && TryFindThreatNearCell(homeExitCell, hostiles, settings.homeExitThreatRadius, out threat, out closestDistance))
             {
-                reason = "hostile near Home-area exit"; dangerCell = homeExitCell; dangerRadius = settings.homeExitThreatRadius; return true;
+                reason = "hostile near protected-base exit";
+                dangerCell = homeExitCell;
+                dangerRadius = settings.homeExitThreatRadius;
+                return true;
             }
 
             float routeRadiusSquared = settings.routeThreatRadius * settings.routeThreatRadius;
             for (int i = 0; i < route.Count; i += 3)
             {
                 IntVec3 node = route[i];
-                if (!node.InBounds(map) || home[node]) continue;
+                if (!node.InBounds(map) || ThreatAwareHomeSafety.IsSafeCell(map, home, node)) continue;
+
                 for (int h = 0; h < hostiles.Count; h++)
                 {
                     Pawn hostile = hostiles[h];
                     float distanceSquared = (node - hostile.Position).LengthHorizontalSquared;
                     if (distanceSquared > routeRadiusSquared) continue;
+
                     float distance = (float)Math.Sqrt(distanceSquared);
                     if (distance < closestDistance)
                     {
-                        closestDistance = distance; threat = hostile; dangerCell = node; dangerRadius = settings.routeThreatRadius;
+                        closestDistance = distance;
+                        threat = hostile;
+                        dangerCell = node;
+                        dangerRadius = settings.routeThreatRadius;
                     }
                 }
             }
-            if (threat != null) { reason = "hostile near actual remaining path"; return true; }
+
+            if (threat != null)
+            {
+                reason = "hostile near actual remaining path";
+                return true;
+            }
             return false;
         }
 
-        private static bool TryFindThreatNearCell(IntVec3 cell, List<Pawn> hostiles, float radius, out Pawn threat, out float closestDistance)
+        private static bool TryFindThreatNearCell(IntVec3 cell, List<Pawn> hostiles, float radius,
+            out Pawn threat, out float closestDistance)
         {
-            threat = null; closestDistance = float.MaxValue;
+            threat = null;
+            closestDistance = float.MaxValue;
             float radiusSquared = radius * radius;
             for (int i = 0; i < hostiles.Count; i++)
             {
                 float distanceSquared = (cell - hostiles[i].Position).LengthHorizontalSquared;
                 if (distanceSquared <= radiusSquared && distanceSquared < closestDistance * closestDistance)
                 {
-                    closestDistance = (float)Math.Sqrt(distanceSquared); threat = hostiles[i];
+                    closestDistance = (float)Math.Sqrt(distanceSquared);
+                    threat = hostiles[i];
                 }
             }
             return threat != null;
@@ -459,12 +492,22 @@ namespace BetterRimAI
 
         private static bool TryGetJobDestination(Job job, out IntVec3 destination)
         {
-            if (job != null && job.targetA.IsValid) { destination = job.targetA.Cell; return destination.IsValid; }
-            if (job != null && job.targetB.IsValid) { destination = job.targetB.Cell; return destination.IsValid; }
-            destination = IntVec3.Invalid; return false;
+            if (job != null && job.targetA.IsValid)
+            {
+                destination = job.targetA.Cell;
+                return destination.IsValid;
+            }
+            if (job != null && job.targetB.IsValid)
+            {
+                destination = job.targetB.Cell;
+                return destination.IsValid;
+            }
+            destination = IntVec3.Invalid;
+            return false;
         }
 
-        private static void LogDecision(Pawn pawn, IntVec3 destination, Pawn threat, string reason, float closestDistance, BetterRimAISettings settings)
+        private static void LogDecision(Pawn pawn, IntVec3 destination, Pawn threat, string reason,
+            float closestDistance, BetterRimAISettings settings)
         {
             if (!settings.threatDebugLogging) return;
             int tick = Find.TickManager?.TicksGame ?? 0;
