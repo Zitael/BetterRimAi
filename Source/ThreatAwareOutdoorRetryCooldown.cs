@@ -7,22 +7,20 @@ using Verse.AI;
 namespace BetterRimAI
 {
     /// <summary>
-    /// Short per-pawn backoff after BetterRimAI cancels an unsafe autonomous outdoor job.
+    /// Per-pawn backoff after BetterRimAI stops an unsafe autonomous outdoor job.
     ///
-    /// Without this, the think tree can immediately choose a different outdoor target (or the
-    /// same modded need job) during CheckForJobOverride, making the pawn bounce at the Home edge.
-    /// The cooldown only suppresses autonomous jobs that have a target outside Home; jobs inside
-    /// Home and explicit player orders remain available. After a few seconds one outdoor job is
-    /// allowed again and the normal route check decides whether conditions have become safe.
+    /// The backoff suppresses only autonomous jobs that would leave the protected base envelope.
+    /// Indoor jobs, jobs in enclosed Home-area pockets, explicit player orders and Attack mode are
+    /// still available. A longer retry window avoids repeatedly poking the same dangerous exit.
     /// </summary>
     [HarmonyPatch(typeof(ThreatAwareOutdoorWorkPatch), "CancelUnsafeCurrentJob")]
     public static class ThreatAwareOutdoorRetryCooldown
     {
-        private const int RetryCooldownTicks = 180;
+        private const int RetryCooldownTicks = 600;
         private static readonly Dictionary<long, int> BlockUntilTick = new Dictionary<long, int>();
 
-        // Prefix is intentional: CancelUnsafeCurrentJob calls CheckForJobOverride internally.
-        // The backoff must already exist while that new job search is running.
+        // Prefix is intentional: the cooldown must be active before the deferred cancellation is
+        // consumed by Pawn_JobTracker on the next tick.
         [HarmonyPrefix]
         public static void BeforeUnsafeJobCancellation(Pawn pawn)
         {
@@ -39,7 +37,7 @@ namespace BetterRimAI
                 return false;
 
             BetterRimAISettings settings = BetterRimAIMod.Settings;
-            if (settings == null || !settings.threatAwareOutdoorWork)
+            if (settings == null || !settings.threatAwareOutdoorWork || !ThreatAwareOutdoorWorkPatch.IsProtectedPlayerPawn(pawn))
                 return false;
 
             if (pawn.playerSettings != null
@@ -93,7 +91,7 @@ namespace BetterRimAI
                 cell = target.Cell;
             }
 
-            return cell.IsValid && cell.InBounds(map) && !home[cell];
+            return cell.IsValid && cell.InBounds(map) && !ThreatAwareHomeSafety.IsSafeCell(map, home, cell);
         }
 
         private static long PawnKey(Pawn pawn)
