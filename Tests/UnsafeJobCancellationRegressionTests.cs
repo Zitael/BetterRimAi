@@ -8,24 +8,31 @@ namespace BetterRimAI.Tests
     public class UnsafeJobCancellationRegressionTests
     {
         [Test]
-        public void UnsafeCancellation_DoesNotReenterCheckForJobOverride()
+        public void UnsafeCancellation_DoesNotMutateJobTrackerInsidePathing()
         {
             string source = File.ReadAllText(FindSourceFile("ThreatAwareOutdoorWorkPatch.cs"));
             int start = source.IndexOf("private static void CancelUnsafeCurrentJob", StringComparison.Ordinal);
             Assert.That(start, Is.GreaterThanOrEqualTo(0));
             int end = source.IndexOf("private static bool IsAttackOverride", start, StringComparison.Ordinal);
             Assert.That(end, Is.GreaterThan(start));
-            string method = source.Substring(start, end - start);
+            string method = StripLineComments(source.Substring(start, end - start));
 
-            // Strip comments before checking executable source. The method intentionally documents
-            // why CheckForJobOverride must NOT be called here, so a raw substring check produces a
-            // false positive on the explanatory comment itself.
-            string executable = StripLineComments(method);
+            Assert.That(method.Contains("CheckForJobOverride()"), Is.False,
+                "Pathing must never re-enter the think tree while TryEnterNextPathCell is on the stack.");
+            Assert.That(method.Contains("EndCurrentJob("), Is.False,
+                "Ending the current job from TryEnterNextPathCell can install another path before the old transition unwinds.");
+            Assert.That(method.Contains("ThreatAwarePendingCancellation.Schedule(pawn, unsafeJob)"), Is.True,
+                "Unsafe movement must be stopped immediately and cancellation deferred to Pawn_JobTracker.");
+        }
 
-            Assert.That(executable.Contains("CheckForJobOverride()"), Is.False,
-                "Calling CheckForJobOverride from TryEnterNextPathCell re-enters AI/pathing and can make pawns bounce between cells.");
-            Assert.That(executable.Contains("EndCurrentJob(JobCondition.Incompletable, startNewJob: true)"), Is.True,
-                "Unsafe cancellation should hand replacement-job selection back to Pawn_JobTracker normally.");
+        [Test]
+        public void DeferredCancellation_RunsFromPawnJobTrackerTick()
+        {
+            string source = File.ReadAllText(FindSourceFile("ThreatAwarePendingCancellation.cs"));
+            Assert.That(source.Contains("Pawn_JobTracker.JobTrackerTick"), Is.True);
+            Assert.That(source.Contains("Pawn_JobTracker.JobTrackerTickInterval"), Is.True,
+                "Performance mods may use interval ticking, so both tracker paths must consume pending cancellation.");
+            Assert.That(source.Contains("EndCurrentJob(JobCondition.Incompletable, startNewJob: true)"), Is.True);
         }
 
         private static string StripLineComments(string source)
