@@ -2,20 +2,38 @@
 
 A RimWorld 1.6 mod focused on smarter pawn work planning.
 
-## v0.1 — long-trip need guard
+## Long-trip need guard
 
 When vanilla RimWorld selects a normal work job more than **50 cells** away, BetterRimAI checks the pawn before allowing the trip.
 
 Current preparation thresholds:
 
-- Food: 38%
-- Rest: 30%
+- Food: 45%
+- Rest: 40%
 
 If one of those needs is low, the mod asks RimWorld's own vanilla `JobGiver_GetFood` / `JobGiver_GetRest` to produce the appropriate job and uses it instead of the distant work. If vanilla cannot produce that job yet, the distant work is deferred rather than sending the pawn across the map immediately before a need interruption.
 
 Emergency work and player-forced jobs are not changed.
 
-This is deliberately a small first iteration. The next step is work batching: once a pawn has paid the travel cost to reach a remote work area, prefer nearby compatible jobs before returning to global job selection.
+## Threat-aware outdoor work
+
+Automatic work whose destination is outside the player's **Home area** is checked against the pawn's actual vanilla path.
+
+By default:
+
+- the feature is enabled;
+- a hostile within **15 cells** of the calculated route blocks the automatic outdoor job;
+- a hostile within **20 cells** of the route's Home-area exit blocks the job before the pawn leaves the base;
+- hostiles elsewhere on the map do not matter;
+- drafted pawns and colonists whose hostility response is **Attack** bypass this restriction.
+
+The hostile check covers hostile pawns such as raiders, manhunters and shamblers through RimWorld's normal `HostileTo` relationship.
+
+The two radii and the feature toggle are available under **Options → Mod settings → Better Rim AI**.
+
+This version blocks an unsafe trip rather than rewriting RimWorld 1.6's low-level pathfinder. That deliberately keeps the mod lightweight and compatible while still preventing a pawn from opening the base and walking through a hostile corridor.
+
+Pick Up And Haul is supported optionally through runtime Harmony/reflection compatibility. BetterRimAI does not take a compile-time dependency on Pick Up And Haul and must continue to load when that mod is absent.
 
 ## Requirements
 
@@ -46,6 +64,27 @@ dist\BetterRimAI\
     └── BetterRimAI.pdb
 ```
 
+## Regression tests
+
+The `Tests` project contains NUnit regression tests for compatibility bugs that have already occurred in development, including:
+
+- Harmony prefixes must not depend on parameter names chosen by another mod (`t` vs `thing`, etc.);
+- Pick Up And Haul support must remain optional with no compile-time assembly dependency;
+- a danger block identified by a `thingIDNumber` must still match the lightweight probe job used while scanning candidates;
+- a different Thing must not be accidentally blacklisted;
+- cell-based blocks must still match by job type plus destination.
+
+Run the suite from the repository root:
+
+```powershell
+dotnet test .\Tests\BetterRimAI.Tests.csproj -c Release `
+  -p:RimWorldDir="D:\Progs\Steam\steamapps\common\RimWorld"
+```
+
+`RimWorldDir` is required because the production assembly and a few regression tests compile against RimWorld's `Assembly-CSharp.dll`.
+
+Before merging behavior changes, both `dotnet build` and `dotnet test` should pass.
+
 ## Install locally
 
 Copy the entire generated `dist\BetterRimAI` directory to:
@@ -65,14 +104,16 @@ Then start RimWorld, open **Mods**, enable **Harmony** and **Better Rim AI**, ke
 On startup the log should contain:
 
 ```text
-[BetterRimAI] v0.1 loaded: long-trip need guard enabled.
+[BetterRimAI] loaded: long-trip need guard + threat-aware outdoor work enabled.
 ```
 
-When the guard activates, it logs a line such as:
+When the long-trip guard activates, it logs a line such as:
 
 ```text
 [BetterRimAI] Bob: distant work 87 cells, food=34%, rest=62% -> replaced distant work with food.
 ```
+
+When threat-aware outdoor work blocks a trip, it logs a throttled line identifying whether the threat was near the Home-area exit or the calculated route.
 
 ## Development workflow
 
