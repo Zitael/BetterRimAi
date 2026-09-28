@@ -27,6 +27,8 @@ namespace BetterRimAI
         private static readonly Dictionary<int, CacheEntry> CacheByMap = new Dictionary<int, CacheEntry>();
         private static readonly Queue<int> FloodQueue = new Queue<int>(4096);
 
+        internal static void Reset() => CacheByMap.Clear();
+
         public static bool IsSafeCell(Map map, Area_Home home, IntVec3 cell)
         {
             if (map == null || home == null || !cell.IsValid || !cell.InBounds(map))
@@ -53,7 +55,7 @@ namespace BetterRimAI
             int height = map.Size.z;
             int cellCount = width * height;
             bool sizeChanged = cache.width != width || cache.height != height || cache.exteriorNonHome == null || cache.exteriorNonHome.Length != cellCount;
-            if (!sizeChanged && tick - cache.tick < CacheTicks)
+            if (!sizeChanged && tick >= cache.tick && tick - cache.tick < CacheTicks)
                 return cache;
 
             cache.tick = tick;

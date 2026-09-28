@@ -1,9 +1,7 @@
 using System;
 using System.Reflection;
 using HarmonyLib;
-using RimWorld;
 using Verse;
-using Verse.AI;
 
 namespace BetterRimAI
 {
@@ -13,9 +11,9 @@ namespace BetterRimAI
         [HarmonyPrepare]
         public static bool Prepare()
         {
-            Type type = AccessTools.TypeByName("PickUpAndHaul.WorkGiver_HaulToInventory");
-            if (type != null) Log.Message("[BetterRimAI][PUAH] compatibility enabled for " + type.AssemblyQualifiedName);
-            return type != null;
+            MethodBase method = TargetMethod();
+            if (method != null) Log.Message("[BetterRimAI][PUAH] compatibility enabled for " + method.DeclaringType.AssemblyQualifiedName);
+            return method != null;
         }
 
         [HarmonyTargetMethod]
@@ -25,27 +23,13 @@ namespace BetterRimAI
             return type == null ? null : AccessTools.DeclaredMethod(type, "HasJobOnThing", new[] { typeof(Pawn), typeof(Thing), typeof(bool) });
         }
 
+        // Positional binding works with both "thing" and "t" in third-party versions.
         [HarmonyPrefix]
-        public static bool Prefix(Pawn pawn, Thing thing, bool forced, ref bool __result)
+        public static bool Prefix(Pawn __0, Thing __1, bool __2, ref bool __result)
         {
-            if (pawn == null || thing == null) return true;
-            BetterRimAISettings settings = BetterRimAIMod.Settings;
-            if (settings == null || !settings.threatAwareOutdoorWork) return true;
-
-            if (!ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, thing, forced)) return true;
-
-            Job probe = JobMaker.MakeJob(JobDefOf.Wait);
-            probe.targetA = thing;
-            bool suppress;
-            try { suppress = ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, probe); }
-            finally { JobMaker.ReturnToPool(probe); }
-
-            ThreatAwareBlockDiagnostics.Once("puah-hasjob", pawn, thing, pawn.CurJob, suppress,
-                $"forced={forced}, curJob={pawn.CurJob?.def?.defName ?? "null"}");
-            if (!suppress) return true;
-
+            if (!ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(__0, __1, __2)) return true;
             __result = false;
-            ThreatAwareBlockDiagnostics.Once("puah-rejected", pawn, thing, pawn.CurJob, true, "HasJobOnThing forced false");
+            ThreatAwareBlockDiagnostics.Once("puah-rejected", __0, __1, null, true, "candidate rejected before movement");
             return false;
         }
     }

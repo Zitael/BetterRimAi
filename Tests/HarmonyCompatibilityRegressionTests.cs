@@ -9,7 +9,7 @@ namespace BetterRimAI.Tests
     public class HarmonyCompatibilityRegressionTests
     {
         [Test]
-        public void GenericWorkGiverPrefix_UsesHarmonyArgsArray_NotForeignParameterNames()
+        public void GenericWorkGiverPrefix_UsesPositionalArgumentsWithoutBoxing()
         {
             MethodInfo prefix = typeof(ThreatAwareBlockedThingCandidatePatch)
                 .GetMethod("Prefix", BindingFlags.Public | BindingFlags.Static);
@@ -18,8 +18,8 @@ namespace BetterRimAI.Tests
 
             ParameterInfo[] parameters = prefix.GetParameters();
             Assert.That(parameters.Length, Is.GreaterThanOrEqualTo(1));
-            Assert.That(parameters[0].ParameterType, Is.EqualTo(typeof(object[])));
-            Assert.That(parameters[0].Name, Is.EqualTo("__args"));
+            Assert.That(parameters[0].ParameterType, Is.EqualTo(typeof(Verse.Pawn)));
+            Assert.That(parameters[0].Name, Is.EqualTo("__0"));
 
             Assert.That(parameters.Any(p => p.Name == "t"), Is.False,
                 "Regression: binding a Harmony prefix to a concrete foreign parameter name can make PatchAll fail when another mod names that parameter differently.");

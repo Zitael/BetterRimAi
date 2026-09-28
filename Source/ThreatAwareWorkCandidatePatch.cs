@@ -8,48 +8,53 @@ using Verse.AI;
 
 namespace BetterRimAI
 {
+    internal static class ThreatAwareScannerTargets
+    {
+        // Startup only: include abstract intermediate overrides inherited by concrete scanners.
+        internal static IEnumerable<MethodBase> Find(string name, Type targetType)
+        {
+            Type scanner = typeof(WorkGiver_Scanner);
+            HashSet<MethodBase> seen = new HashSet<MethodBase>();
+            foreach (Type type in GenTypes.AllTypes)
+            {
+                if (type == null || type.ContainsGenericParameters || !scanner.IsAssignableFrom(type)) continue;
+                if (type.FullName == "PickUpAndHaul.WorkGiver_HaulToInventory" && name == nameof(WorkGiver_Scanner.HasJobOnThing)) continue;
+                MethodInfo method = AccessTools.DeclaredMethod(type, name, new[] { typeof(Pawn), targetType, typeof(bool) });
+                Type resultType = name.StartsWith("Has", StringComparison.Ordinal) ? typeof(bool) : typeof(Job);
+                if (method != null && !method.IsAbstract && method.ReturnType == resultType && seen.Add(method)) yield return method;
+            }
+        }
+    }
+
     [HarmonyPatch]
     public static class ThreatAwareBlockedThingCandidatePatch
     {
         [HarmonyTargetMethods]
-        public static IEnumerable<MethodBase> TargetMethods()
+        public static IEnumerable<MethodBase> TargetMethods() => ThreatAwareScannerTargets.Find(nameof(WorkGiver_Scanner.HasJobOnThing), typeof(Thing));
+
+        // Positional Harmony arguments avoid foreign parameter-name dependencies AND the
+        // allocation/boxing required by object[] __args on every candidate.
+        [HarmonyPrefix]
+        public static bool Prefix(Pawn __0, Thing __1, bool __2, ref bool __result)
         {
-            Type scannerType = typeof(WorkGiver_Scanner);
-            HashSet<MethodBase> seen = new HashSet<MethodBase>();
-            foreach (Type type in GenTypes.AllTypes)
-            {
-                if (type == null || type.IsAbstract || !scannerType.IsAssignableFrom(type)) continue;
-                MethodInfo method = AccessTools.DeclaredMethod(type, nameof(WorkGiver_Scanner.HasJobOnThing), new[] { typeof(Pawn), typeof(Thing), typeof(bool) });
-                if (method != null && method.ReturnType == typeof(bool) && seen.Add(method)) yield return method;
-            }
-            MethodInfo baseMethod = AccessTools.DeclaredMethod(scannerType, nameof(WorkGiver_Scanner.HasJobOnThing), new[] { typeof(Pawn), typeof(Thing), typeof(bool) });
-            if (baseMethod != null && seen.Add(baseMethod)) yield return baseMethod;
+            if (!ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(__0, __1, __2)) return true;
+            ThreatAwareBlockDiagnostics.Once("candidate-rejected-before-movement", __0, __1, null, true, "HasJobOnThing");
+            __result = false;
+            return false;
         }
+    }
+
+    [HarmonyPatch]
+    public static class ThreatAwareBlockedCellCandidatePatch
+    {
+        [HarmonyTargetMethods]
+        public static IEnumerable<MethodBase> TargetMethods() => ThreatAwareScannerTargets.Find(nameof(WorkGiver_Scanner.HasJobOnCell), typeof(IntVec3));
 
         [HarmonyPrefix]
-        public static bool Prefix(object[] __args, MethodBase __originalMethod, ref bool __result)
+        public static bool Prefix(Pawn __0, IntVec3 __1, bool __2, ref bool __result)
         {
-            if (__args == null || __args.Length < 2) return true;
-            Pawn pawn = __args[0] as Pawn;
-            Thing thing = __args[1] as Thing;
-            if (pawn == null || thing == null) return true;
-
-            bool forced = __args.Length >= 3 && __args[2] is bool value && value;
-
-            // This method can run hundreds of times per frame. The common case must remain O(1),
-            // allocation-free, and reflection-free. Full threat validation only runs for a Thing
-            // already present in BetterRimAI's tiny blocked-target set.
-            if (!ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, thing, forced)) return true;
-
-            Job probe = JobMaker.MakeJob(JobDefOf.Wait);
-            probe.targetA = thing;
-            bool suppress;
-            try { suppress = ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, probe); }
-            finally { JobMaker.ReturnToPool(probe); }
-            if (!suppress) return true;
-
-            ThreatAwareBlockDiagnostics.Once("generic-rejected", pawn, thing, pawn.CurJob, true,
-                "method=" + (__originalMethod?.DeclaringType?.FullName ?? "unknown") + "." + (__originalMethod?.Name ?? "unknown"));
+            if (!ThreatAwareOutdoorWorkPatch.ShouldSuppressCandidate(__0, __1, __2)) return true;
+            ThreatAwareBlockDiagnostics.Once("candidate-rejected-before-movement", __0, null, null, true, "HasJobOnCell");
             __result = false;
             return false;
         }

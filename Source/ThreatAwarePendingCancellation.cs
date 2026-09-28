@@ -23,6 +23,8 @@ namespace BetterRimAI
     {
         private static readonly Dictionary<long, Job> PendingByPawn = new Dictionary<long, Job>();
 
+        internal static void Reset() => PendingByPawn.Clear();
+
         public static void Schedule(Pawn pawn, Job unsafeJob)
         {
             if (pawn?.Map == null || unsafeJob == null)
@@ -69,6 +71,10 @@ namespace BetterRimAI
             if (current == null)
                 return;
 
+            // A player override can arrive between StopDead and this deferred callback.
+            if (!ThreatAwareOutdoorRetryCooldown.Applies(pawn, current.playerForced))
+                return;
+
             // Exact old job, a fresh equivalent job that still matches the global danger block,
             // or any autonomous outdoor retry during the cooldown should be terminated here.
             bool exactJob = ReferenceEquals(current, originallyUnsafeJob);
@@ -79,9 +85,9 @@ namespace BetterRimAI
                 return; // Another mod/player legitimately replaced it with a safe job.
 
             pawn.jobs.jobQueue.RemoveAll(pawn, queuedJob =>
-                ReferenceEquals(queuedJob, originallyUnsafeJob)
+                !queuedJob.playerForced && (ReferenceEquals(queuedJob, originallyUnsafeJob)
                 || ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, queuedJob)
-                || ThreatAwareOutdoorRetryCooldown.ShouldSuppressOutdoorRetry(pawn, queuedJob));
+                || ThreatAwareOutdoorRetryCooldown.ShouldSuppressOutdoorRetry(pawn, queuedJob)));
 
             Thing thing = current.targetA.HasThing ? current.targetA.Thing
                 : current.targetB.HasThing ? current.targetB.Thing

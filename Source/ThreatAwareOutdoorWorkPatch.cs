@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using HarmonyLib;
 using RimWorld;
 using Verse;
@@ -45,6 +46,7 @@ namespace BetterRimAI
             public IntVec3 destination = IntVec3.Invalid;
             public IntVec3 dangerCell = IntVec3.Invalid;
             public float dangerRadius;
+            public ConditionalWeakTable<Pawn, ThreatRestriction> validation = new ConditionalWeakTable<Pawn, ThreatRestriction>();
         }
 
         private sealed class HostileCacheEntry
@@ -57,8 +59,30 @@ namespace BetterRimAI
         private static readonly Dictionary<int, PathCheckState> CheckStateByPawn = new Dictionary<int, PathCheckState>();
         private static readonly Dictionary<long, HostileCacheEntry> HostileCache = new Dictionary<long, HostileCacheEntry>();
         private static readonly List<GlobalDangerBlock> GlobalBlocks = new List<GlobalDangerBlock>();
-        private static readonly HashSet<long> BlockedThingKeys = new HashSet<long>();
+        private static readonly Dictionary<ThreatTargetKey, GlobalDangerBlock> BlockIndex = new Dictionary<ThreatTargetKey, GlobalDangerBlock>();
         private static readonly List<IntVec3> RemainingPathCells = new List<IntVec3>(256);
+
+        internal static void InvalidatePath(Pawn pawn)
+        {
+            if (pawn == null || BetterRimAIMod.Settings?.threatAwareOutdoorWork != true) return;
+            if (CheckStateByPawn.TryGetValue(pawn.thingIDNumber, out PathCheckState state))
+            {
+                state.path = null;
+                state.lastCheckTick = -999999;
+            }
+            if (pawn.Map != null)
+                HostileCache.Remove(((long)pawn.Map.uniqueID << 32) | (uint)pawn.thingIDNumber);
+        }
+
+        internal static void Reset()
+        {
+            LastLogTickByPawn.Clear();
+            CheckStateByPawn.Clear();
+            HostileCache.Clear();
+            GlobalBlocks.Clear();
+            BlockIndex.Clear();
+            RemainingPathCells.Clear();
+        }
 
         [HarmonyPrefix]
         public static bool Prefix(Pawn_PathFollower __instance, Pawn ___pawn)
@@ -100,7 +124,7 @@ namespace BetterRimAI
 
                 // A mod can bypass ThinkNode/WorkGiver filtering and restart an already blocked job.
                 // Stop movement immediately, but do not end the job from inside pathing.
-                if (state.blocked && JobMatchesStateBlock(pawn.CurJob, state))
+                if (state.blocked && JobMatchesStateBlock(pawn.CurJob, state) && ThreatAwareOutdoorRetryCooldown.IsRestricted(pawn))
                 {
                     CancelUnsafeCurrentJob(pawn, __instance);
                     return false;
@@ -182,6 +206,7 @@ namespace BetterRimAI
                 state.blockedJobDef = unsafeJob?.def?.defName;
                 state.blockedThingId = GetPrimaryThingId(unsafeJob);
 
+                ThreatAwareOutdoorRetryCooldown.Remember(pawn, dangerCell, dangerRadius, tick);
                 RememberGlobalBlock(map, unsafeJob, destination, dangerCell, dangerRadius);
                 LogDecision(pawn, destination, threat, reason, closestDistance, settings);
                 CancelUnsafeCurrentJob(pawn, __instance);
@@ -206,45 +231,76 @@ namespace BetterRimAI
 
         public static bool CouldBeBlockedThing(Pawn pawn, Thing thing, bool forced)
         {
-            if (forced || pawn == null || thing == null || pawn.Map == null || !IsProtectedPlayerPawn(pawn)
-                || pawn.Drafted || IsAttackOverride(pawn))
-                return false;
+            return thing != null && ShouldSuppressCandidate(pawn, thing, forced);
+        }
 
-            return BlockedThingKeys.Contains(MakeThingKey(pawn.Map.uniqueID, thing.thingIDNumber));
+        internal static bool ShouldSuppressCandidate(Pawn pawn, LocalTargetInfo target, bool forced)
+        {
+            if (!ThreatAwareOutdoorRetryCooldown.Applies(pawn, forced)) return false;
+            Map map = pawn.Map;
+            bool restricted = ThreatAwareOutdoorRetryCooldown.IsRestricted(pawn);
+            if (!restricted && BlockIndex.Count == 0) return false;
+            if (!ThreatAwareOutdoorRetryCooldown.TargetIsOutsideHome(target, map, map.areaManager?.Home)) return false;
+            if (restricted) return true;
+            return target.HasThing && IsKnownTargetBlocked(pawn, target.Thing.thingIDNumber, null, target.Cell);
         }
 
         public static bool ShouldSuppressWorkJob(Pawn pawn, Job job)
         {
-            if (pawn == null || job == null || pawn.Map == null || !IsProtectedPlayerPawn(pawn)
-                || pawn.Drafted || IsPlayerForcedJob(job) || IsAttackOverride(pawn))
-                return false;
+            if (job == null || !ThreatAwareOutdoorRetryCooldown.Applies(pawn, job.playerForced)) return false;
+            if (ThreatAwareOutdoorRetryCooldown.ShouldSuppressOutdoorRetry(pawn, job)) return true;
+            if (BlockIndex.Count == 0) return false;
+            if (!ThreatAwareOutdoorRetryCooldown.JobHasTargetOutsideHome(pawn, job)) return false;
+            return TargetBlocked(pawn, job.targetA, job.def?.defName)
+                || TargetBlocked(pawn, job.targetB, job.def?.defName)
+                || TargetBlocked(pawn, job.targetC, job.def?.defName)
+                || QueueBlocked(pawn, job.targetQueueA, job.def?.defName)
+                || QueueBlocked(pawn, job.targetQueueB, job.def?.defName);
+        }
 
-            int mapId = pawn.Map.uniqueID;
-            int thingId = GetPrimaryThingId(job);
-            string jobDef = job.def?.defName;
-            TryGetJobDestination(job, out IntVec3 destination);
-
-            if (thingId >= 0 && !BlockedThingKeys.Contains(MakeThingKey(mapId, thingId)))
-                return false;
-
-            int tick = Find.TickManager?.TicksGame ?? 0;
-            for (int i = GlobalBlocks.Count - 1; i >= 0; i--)
-            {
-                GlobalDangerBlock block = GlobalBlocks[i];
-                if (block.mapId != mapId || !BlockMatchesJob(block, thingId, jobDef, destination))
-                    continue;
-
-                List<Pawn> hostiles = GetRelevantHostilesCached(pawn, pawn.Map, tick);
-                if (!ThreatStillNearCell(block.dangerCell, block.dangerRadius, hostiles))
-                {
-                    RemoveGlobalBlockAt(i);
-                    continue;
-                }
-                return true;
-            }
+        private static bool QueueBlocked(Pawn pawn, List<LocalTargetInfo> targets, string jobDef)
+        {
+            if (targets != null)
+                for (int i = 0; i < targets.Count; i++)
+                    if (TargetBlocked(pawn, targets[i], jobDef)) return true;
             return false;
         }
 
+        private static bool TargetBlocked(Pawn pawn, LocalTargetInfo target, string jobDef)
+        {
+            return ThreatAwareOutdoorRetryCooldown.TargetIsOutsideHome(target, pawn.Map, pawn.Map.areaManager?.Home)
+                && IsKnownTargetBlocked(pawn, target.HasThing ? target.Thing.thingIDNumber : -1, jobDef, target.Cell);
+        }
+
+        private static bool IsKnownTargetBlocked(Pawn pawn, int thingId, string jobDef, IntVec3 destination)
+        {
+            var key = new ThreatTargetKey(pawn.Map.uniqueID, thingId, jobDef, destination);
+            if (!BlockIndex.TryGetValue(key, out GlobalDangerBlock block)) return false;
+            bool fresh = !block.validation.TryGetValue(pawn, out ThreatRestriction state);
+            if (fresh)
+            {
+                state = new ThreatRestriction();
+                block.validation.Add(pawn, state);
+            }
+            int tick = Find.TickManager?.TicksGame ?? 0;
+            if (fresh || state.NeedsValidation(tick))
+            {
+                bool present = DangerStillPresent(pawn, block.dangerCell, block.dangerRadius, tick);
+                state.Refresh(tick, present);
+                if (!present)
+                {
+                    BlockIndex.Remove(key);
+                    GlobalBlocks.Remove(block);
+                    ThreatAwareBlockDiagnostics.Once("restriction-cleared", pawn, null, null, false, "target evidence expired");
+                }
+            }
+            return state.Active;
+        }
+
+        internal static bool DangerStillPresent(Pawn pawn, IntVec3 dangerCell, float radius, int tick)
+        {
+            return ThreatStillNearCell(dangerCell, radius, GetRelevantHostilesCached(pawn, pawn.Map, tick));
+        }
         private static bool IsPlayerForcedJob(Job job)
         {
             return job != null && job.playerForced;
@@ -258,6 +314,7 @@ namespace BetterRimAI
 
             // Critical: never EndCurrentJob/CheckForJobOverride while TryEnterNextPathCell is on
             // the stack. Stop movement now and let Pawn_JobTracker cancel the job on its next tick.
+            ThreatAwareBlockDiagnostics.Once("active-path-cancelled-safety-net", pawn, null, unsafeJob, true);
             pather.StopDead();
             ThreatAwarePendingCancellation.Schedule(pawn, unsafeJob);
         }
@@ -294,7 +351,8 @@ namespace BetterRimAI
                 {
                     existing.dangerCell = dangerCell;
                     existing.dangerRadius = dangerRadius;
-                    if (thingId >= 0) BlockedThingKeys.Add(MakeThingKey(map.uniqueID, thingId));
+                    existing.validation = new ConditionalWeakTable<Pawn, ThreatRestriction>();
+                    // Indexed entry already refers to this evidence.
                     return;
                 }
             }
@@ -309,28 +367,7 @@ namespace BetterRimAI
                 dangerRadius = dangerRadius
             });
 
-            if (thingId >= 0)
-                BlockedThingKeys.Add(MakeThingKey(map.uniqueID, thingId));
-        }
-
-        private static void RemoveGlobalBlockAt(int index)
-        {
-            GlobalDangerBlock removed = GlobalBlocks[index];
-            GlobalBlocks.RemoveAt(index);
-            if (removed.thingId < 0) return;
-
-            long key = MakeThingKey(removed.mapId, removed.thingId);
-            for (int i = 0; i < GlobalBlocks.Count; i++)
-            {
-                if (GlobalBlocks[i].mapId == removed.mapId && GlobalBlocks[i].thingId == removed.thingId)
-                    return;
-            }
-            BlockedThingKeys.Remove(key);
-        }
-
-        private static long MakeThingKey(int mapId, int thingId)
-        {
-            return ((long)mapId << 32) | (uint)thingId;
+            BlockIndex[new ThreatTargetKey(map.uniqueID, thingId, jobDef, destination)] = GlobalBlocks[GlobalBlocks.Count - 1];
         }
 
         private static bool BlockMatchesJob(GlobalDangerBlock block, int thingId, string jobDef, IntVec3 destination)
@@ -354,7 +391,7 @@ namespace BetterRimAI
             if (!dangerCell.IsValid || dangerRadius <= 0f) return false;
             float radiusSquared = dangerRadius * dangerRadius;
             for (int i = 0; i < hostiles.Count; i++)
-                if ((dangerCell - hostiles[i].Position).LengthHorizontalSquared <= radiusSquared) return true;
+                if (hostiles[i].Spawned && !hostiles[i].Dead && !hostiles[i].Downed && (dangerCell - hostiles[i].Position).LengthHorizontalSquared <= radiusSquared) return true;
             return false;
         }
 
@@ -390,7 +427,7 @@ namespace BetterRimAI
                 HostileCache[key] = entry;
             }
 
-            if (tick - entry.tick < HostileCacheTicks)
+            if (tick >= entry.tick && tick - entry.tick < HostileCacheTicks)
                 return entry.hostiles;
 
             entry.tick = tick;
