@@ -52,7 +52,7 @@ namespace BetterRimAI
         private sealed class HostileCacheEntry
         {
             public int tick = -999999;
-            public readonly List<Pawn> hostiles = new List<Pawn>();
+            public readonly List<ThreatAwareThreat> hostiles = new List<ThreatAwareThreat>();
         }
 
         private static readonly Dictionary<int, int> LastLogTickByPawn = new Dictionary<int, int>();
@@ -79,6 +79,7 @@ namespace BetterRimAI
             LastLogTickByPawn.Clear();
             CheckStateByPawn.Clear();
             HostileCache.Clear();
+            ThreatAwareFireCoverage.Reset();
             GlobalBlocks.Clear();
             BlockIndex.Clear();
             RemainingPathCells.Clear();
@@ -179,7 +180,7 @@ namespace BetterRimAI
                     return true;
                 }
 
-                List<Pawn> hostiles = GetRelevantHostilesCached(pawn, map, tick);
+                List<ThreatAwareThreat> hostiles = GetRelevantHostilesCached(pawn, map, tick);
                 if (hostiles.Count == 0)
                 {
                     ClearBlockedState(state);
@@ -187,7 +188,7 @@ namespace BetterRimAI
                 }
 
                 if (!TryFindUnsafeThreat(pawn, RemainingPathCells, home, hostiles, settings,
-                        out Pawn threat, out string reason, out float closestDistance,
+                        out Thing threat, out string reason, out float closestDistance,
                         out IntVec3 dangerCell, out float dangerRadius))
                 {
                     ClearBlockedState(state);
@@ -299,7 +300,7 @@ namespace BetterRimAI
 
         internal static bool DangerStillPresent(Pawn pawn, IntVec3 dangerCell, float radius, int tick)
         {
-            return ThreatStillNearCell(dangerCell, radius, GetRelevantHostilesCached(pawn, pawn.Map, tick));
+            return ThreatStillNearCell(pawn.Map, dangerCell, radius, GetRelevantHostilesCached(pawn, pawn.Map, tick));
         }
         private static bool IsPlayerForcedJob(Job job)
         {
@@ -386,15 +387,13 @@ namespace BetterRimAI
             return !TryGetJobDestination(job, out IntVec3 destination) || destination == state.blockedDestination;
         }
 
-        private static bool ThreatStillNearCell(IntVec3 dangerCell, float dangerRadius, List<Pawn> hostiles)
+        private static bool ThreatStillNearCell(Map map, IntVec3 dangerCell, float dangerRadius, List<ThreatAwareThreat> hostiles)
         {
             if (!dangerCell.IsValid || dangerRadius <= 0f) return false;
-            float radiusSquared = dangerRadius * dangerRadius;
             for (int i = 0; i < hostiles.Count; i++)
-                if (hostiles[i].Spawned && !hostiles[i].Dead && !hostiles[i].Downed && (dangerCell - hostiles[i].Position).LengthHorizontalSquared <= radiusSquared) return true;
+                if (hostiles[i].ThreatensCell(map, dangerCell, dangerRadius)) return true;
             return false;
         }
-
         private static int GetPrimaryThingId(Job job)
         {
             if (job == null) return -1;
@@ -418,7 +417,7 @@ namespace BetterRimAI
             state.blockedThingId = -1;
         }
 
-        private static List<Pawn> GetRelevantHostilesCached(Pawn pawn, Map map, int tick)
+        private static List<ThreatAwareThreat> GetRelevantHostilesCached(Pawn pawn, Map map, int tick)
         {
             long key = ((long)map.uniqueID << 32) | (uint)pawn.thingIDNumber;
             if (!HostileCache.TryGetValue(key, out HostileCacheEntry entry))
@@ -437,13 +436,22 @@ namespace BetterRimAI
             {
                 Pawn other = allPawns[i];
                 if (other != pawn && !other.Dead && !other.Downed && other.Spawned && other.HostileTo(pawn))
-                    entry.hostiles.Add(other);
+                    entry.hostiles.Add(new ThreatAwareThreat(other));
+            }
+            // RimWorld's combat registry includes hostile turrets and modded attack structures.
+            // Aggressive/factionless pawns are already covered by the pawn scan above.
+            // Enumerate registered faction-hostile structures without scanning all buildings.
+            if (map.attackTargetsCache != null)
+            {
+                foreach (IAttackTarget target in map.attackTargetsCache.TargetsHostileToFaction(pawn.Faction))
+                    if (ThreatAwareThreat.TryCreateStructure(pawn, target, out ThreatAwareThreat structure))
+                        entry.hostiles.Add(structure);
             }
             return entry.hostiles;
         }
 
-        private static bool TryFindUnsafeThreat(Pawn pawn, List<IntVec3> route, Area_Home home, List<Pawn> hostiles,
-            BetterRimAISettings settings, out Pawn threat, out string reason, out float closestDistance,
+        private static bool TryFindUnsafeThreat(Pawn pawn, List<IntVec3> route, Area_Home home, List<ThreatAwareThreat> hostiles,
+            BetterRimAISettings settings, out Thing threat, out string reason, out float closestDistance,
             out IntVec3 dangerCell, out float dangerRadius)
         {
             threat = null;
@@ -470,7 +478,7 @@ namespace BetterRimAI
             }
 
             if (homeExitCell.IsValid
-                && TryFindThreatNearCell(homeExitCell, hostiles, settings.homeExitThreatRadius, out threat, out closestDistance))
+                && TryFindThreatNearCell(map, homeExitCell, hostiles, settings.homeExitThreatRadius, out threat, out closestDistance))
             {
                 reason = "hostile near protected-base exit";
                 dangerCell = homeExitCell;
@@ -478,23 +486,24 @@ namespace BetterRimAI
                 return true;
             }
 
-            float routeRadiusSquared = settings.routeThreatRadius * settings.routeThreatRadius;
-            for (int i = 0; i < route.Count; i += 3)
+            // Sample mobile threats as before; check every exterior cell for narrow turret firing lanes.
+            for (int i = 0; i < route.Count; i++)
             {
                 IntVec3 node = route[i];
                 if (!node.InBounds(map) || ThreatAwareHomeSafety.IsSafeCell(map, home, node)) continue;
 
                 for (int h = 0; h < hostiles.Count; h++)
                 {
-                    Pawn hostile = hostiles[h];
-                    float distanceSquared = (node - hostile.Position).LengthHorizontalSquared;
-                    if (distanceSquared > routeRadiusSquared) continue;
+                    ThreatAwareThreat hostile = hostiles[h];
+                    if (i % 3 != 0 && !hostile.IsRangedStructure) continue;
+                    if (!hostile.ThreatensCell(map, node, settings.routeThreatRadius)) continue;
+                    float distanceSquared = (node - hostile.Source.Position).LengthHorizontalSquared;
 
                     float distance = (float)Math.Sqrt(distanceSquared);
                     if (distance < closestDistance)
                     {
                         closestDistance = distance;
-                        threat = hostile;
+                        threat = hostile.Source;
                         dangerCell = node;
                         dangerRadius = settings.routeThreatRadius;
                     }
@@ -509,19 +518,18 @@ namespace BetterRimAI
             return false;
         }
 
-        private static bool TryFindThreatNearCell(IntVec3 cell, List<Pawn> hostiles, float radius,
-            out Pawn threat, out float closestDistance)
+        private static bool TryFindThreatNearCell(Map map, IntVec3 cell, List<ThreatAwareThreat> hostiles, float radius,
+            out Thing threat, out float closestDistance)
         {
             threat = null;
             closestDistance = float.MaxValue;
-            float radiusSquared = radius * radius;
             for (int i = 0; i < hostiles.Count; i++)
             {
-                float distanceSquared = (cell - hostiles[i].Position).LengthHorizontalSquared;
-                if (distanceSquared <= radiusSquared && distanceSquared < closestDistance * closestDistance)
+                float distanceSquared = (cell - hostiles[i].Source.Position).LengthHorizontalSquared;
+                if (distanceSquared < closestDistance * closestDistance && hostiles[i].ThreatensCell(map, cell, radius))
                 {
                     closestDistance = (float)Math.Sqrt(distanceSquared);
-                    threat = hostiles[i];
+                    threat = hostiles[i].Source;
                 }
             }
             return threat != null;
@@ -543,7 +551,7 @@ namespace BetterRimAI
             return false;
         }
 
-        private static void LogDecision(Pawn pawn, IntVec3 destination, Pawn threat, string reason,
+        private static void LogDecision(Pawn pawn, IntVec3 destination, Thing threat, string reason,
             float closestDistance, BetterRimAISettings settings)
         {
             if (!settings.threatDebugLogging) return;

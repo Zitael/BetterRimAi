@@ -12,7 +12,7 @@ using Verse.AI;
 namespace BetterRimAI.Tests
 {
     [TestFixture, NonParallelizable]
-    public class CandidateSelectionTests
+    public partial class CandidateSelectionTests
     {
         private Game previousGame;
         private BetterRimAISettings previousSettings;
@@ -195,13 +195,13 @@ namespace BetterRimAI.Tests
         {
             // Simulate the cached hostile snapshot produced by a prior route check.
             var get = AccessTools.Method(typeof(ThreatAwareOutdoorWorkPatch), "GetRelevantHostilesCached");
-            var hostiles = (List<Pawn>)get.Invoke(null, new object[] { pawn, map, tick });
+            var hostiles = (List<ThreatAwareThreat>)get.Invoke(null, new object[] { pawn, map, tick });
             var hostile = Bare<Pawn>();
             Set(hostile, "mapIndexOrState", (sbyte)0);
             Set(hostile, "positionInt", Outside);
             hostile.health = Bare<Pawn_HealthTracker>();
             Set(hostile.health, "healthState", PawnHealthState.Mobile);
-            hostiles.Add(hostile);
+            hostiles.Add(new ThreatAwareThreat(hostile));
         }
 
         [Test]
