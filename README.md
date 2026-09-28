@@ -139,7 +139,7 @@ subsequent autonomous outdoor candidates are filtered before travelling.
   The deferred cancellation callback rechecks these overrides, including queued forced jobs.
 - Route evidence is revalidated on demand every **120 ticks** and remains active only
   while danger is still near the recorded route/exit cell. It does not blindly reopen a
-  retry window every 600 ticks. Dead/downed/despawned hostiles cannot renew it. Outdoor
+  retry window every 600 ticks. Dead/downed/despawned hostiles and disabled turrets cannot renew it. Outdoor
   work becomes available at the next expired selection check after danger disappears;
   hostility changes can additionally encounter the existing **60-tick hostile cache**.
   No selected jobs means there is no polling or background scan just to clear a cache.
@@ -164,6 +164,19 @@ creation/1200-tick expiry. Completed-job queue validation is O(queue length), ou
 individual scanner-candidate checks. The existing movement safety net samples the actual
 route/threats on a new path, six traversed cells, or 120-tick recheck. No `PatherTick` patch
 or extra pathfinding has been added.
+
+Mobile threats use vanilla hostility, including hostile insects, shamblers, enemy pawns
+and animals in an aggressive mental state; peaceful animals are excluded. The same
+60-tick snapshot also reads registered hostile combat structures from
+`AttackTargetsCache`, without scanning every building. Turrets use their actual attack
+verb and effective weapon range rather than the mobile-threat proximity radius. Native
+shooting checks honor minimum range and obstructions. Every exterior route cell is
+checked for turret fire, preserving narrow firing lanes between mobile-threat samples.
+Lazy firing geometry is shared per source/map/verb/origin and expires after 120 ticks;
+it costs one byte per map cell per checked firing source. Only route validation or
+expired evidence can populate it. Warm candidate selection never calls a shooting verb.
+Power-off, despawn and changed hostility are reflected when expired evidence rebuilds
+the threat snapshot. Home safety semantics and all player overrides remain unchanged.
 
 With debug logging enabled, per-pawn/per-stage logs are limited to once per 600 ticks:
 `candidate-rejected-before-movement`, `active-path-cancelled-safety-net`, and
@@ -190,6 +203,11 @@ mod list and full Unity simulation still need the following short playtest:
 4. Repeat with Pick Up And Haul enabled and absent. Include an indoor primary pickup with
    an outdoor queued pickup, and needs/recreation fallback. Check the three diagnostic
    stages and ensure there are no Harmony errors at startup.
+5. Repeat with insects, shamblers and manhunters. Put an enemy turret more than the
+   configured pawn-threat radius away, with an outdoor route inside its weapon range.
+   Include a narrow firing lane farther along the route. Verify autonomous pawns stay
+   safe, walls block turret fire, and removing the turret or its power restores outdoor
+   work after revalidation. Compare enabled/disabled using this turret save too.
 
 ### Same-save enabled/disabled FPS comparison
 
