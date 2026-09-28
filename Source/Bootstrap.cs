@@ -11,7 +11,7 @@ namespace BetterRimAI
         {
             var harmony = new Harmony("zitael.betterrimai");
             harmony.PatchAll(Assembly.GetExecutingAssembly());
-            Log.Message("[BetterRimAI] v0.1 loaded: long-trip need guard enabled.");
+            Log.Message("[BetterRimAI] loaded: long-trip need guard + threat-aware outdoor work enabled.");
         }
     }
 }
