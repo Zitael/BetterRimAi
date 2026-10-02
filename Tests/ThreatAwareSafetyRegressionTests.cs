@@ -26,33 +26,33 @@ namespace BetterRimAI.Tests
         }
 
         [Test]
-        public void HomeDestinationGuard_RunsBeforeThreatPathEvaluation()
+        public void ActualPathIsInspectedEvenWhenTargetIsInsideHome()
         {
             string sourcePath = FindSourceFile("ThreatAwareOutdoorWorkPatch.cs");
             string source = File.ReadAllText(sourcePath);
 
             int homeGuard = source.IndexOf("DestinationIsInsideHome(__instance.Destination, map, home)", StringComparison.Ordinal);
-            int blockedCheck = source.IndexOf("state.blocked && JobMatchesStateBlock", StringComparison.Ordinal);
+            int outsideCheck = source.IndexOf("bool leavesProtectedBase", StringComparison.Ordinal);
             int pathRead = source.IndexOf("PawnPath path = __instance.curPath", StringComparison.Ordinal);
+            int oldBlock = source.IndexOf("state.blocked && JobMatchesStateBlock", StringComparison.Ordinal);
 
-            Assert.That(homeGuard, Is.GreaterThanOrEqualTo(0));
-            Assert.That(blockedCheck, Is.GreaterThan(homeGuard),
-                "A destination inside Home must be accepted before an old danger block can cancel it.");
-            Assert.That(pathRead, Is.GreaterThan(homeGuard),
-                "A destination inside Home must bypass outdoor route/threat evaluation.");
+            Assert.That(homeGuard, Is.LessThan(0), "A home-side target can still have an exterior approach path.");
+            Assert.That(pathRead, Is.GreaterThanOrEqualTo(0));
+            Assert.That(outsideCheck, Is.GreaterThan(pathRead), "Use actual path cells before deciding whether the job leaves the protected area.");
+            Assert.That(oldBlock, Is.GreaterThan(outsideCheck), "A previous unsafe approach must not cancel a new protected-side path.");
         }
 
         [Test]
-        public void ForcedOrderGuard_RunsBeforeHomeAndThreatEvaluation()
+        public void ForcedOrderGuard_RunsBeforePathAndThreatEvaluation()
         {
             string sourcePath = FindSourceFile("ThreatAwareOutdoorWorkPatch.cs");
             string source = File.ReadAllText(sourcePath);
 
             int forcedGuard = source.IndexOf("IsPlayerForcedJob(pawn.CurJob)", StringComparison.Ordinal);
-            int homeGuard = source.IndexOf("DestinationIsInsideHome(__instance.Destination, map, home)", StringComparison.Ordinal);
+            int pathRead = source.IndexOf("PawnPath path = __instance.curPath", StringComparison.Ordinal);
 
             Assert.That(forcedGuard, Is.GreaterThanOrEqualTo(0));
-            Assert.That(homeGuard, Is.GreaterThan(forcedGuard),
+            Assert.That(pathRead, Is.GreaterThan(forcedGuard),
                 "Direct player orders must bypass all BetterRimAI threat checks, including outdoor checks.");
         }
 

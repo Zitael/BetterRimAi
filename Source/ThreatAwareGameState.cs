@@ -13,6 +13,7 @@ namespace BetterRimAI
             ThreatAwareHomeSafety.Reset();
             ThreatAwarePendingCancellation.Reset();
             ThreatAwareBlockDiagnostics.Reset();
+            RemoteWorkLocality.Reset();
         }
     }
 }

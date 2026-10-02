@@ -23,7 +23,7 @@ namespace BetterRimAI
         private const int LogCooldownTicks = 600;
         private const int MovingThreatRecheckTicks = 120;
         private const int CellsBetweenThreatChecks = 6;
-        private const int HostileCacheTicks = 60;
+        internal const int HostileCacheTicks = 60;
 
         private sealed class PathCheckState
         {
@@ -80,6 +80,7 @@ namespace BetterRimAI
             CheckStateByPawn.Clear();
             HostileCache.Clear();
             ThreatAwareFireCoverage.Reset();
+            ThreatAwareOutdoorSafetyMap.Reset();
             GlobalBlocks.Clear();
             BlockIndex.Clear();
             RemainingPathCells.Clear();
@@ -115,21 +116,6 @@ namespace BetterRimAI
                 Area_Home home = map?.areaManager?.Home;
                 if (map == null || home == null)
                     return true;
-
-                // Home plus completely enclosed unpainted pockets are treated as protected base.
-                if (DestinationIsInsideHome(__instance.Destination, map, home))
-                {
-                    ClearBlockedState(state);
-                    return true;
-                }
-
-                // A mod can bypass ThinkNode/WorkGiver filtering and restart an already blocked job.
-                // Stop movement immediately, but do not end the job from inside pathing.
-                if (state.blocked && JobMatchesStateBlock(pawn.CurJob, state) && ThreatAwareOutdoorRetryCooldown.IsRestricted(pawn))
-                {
-                    CancelUnsafeCurrentJob(pawn, __instance);
-                    return false;
-                }
 
                 PawnPath path = __instance.curPath;
                 if (!__instance.Moving || path == null || !path.Found || path.Finished || path.NodesLeftCount <= 0)
@@ -178,6 +164,15 @@ namespace BetterRimAI
                 {
                     ClearBlockedState(state);
                     return true;
+                }
+
+                // A reissued job may now use a protected interaction cell. Only retain an
+                // old block when its new actual path still leaves the protected region.
+                if (state.blocked && JobMatchesStateBlock(pawn.CurJob, state)
+                    && ThreatAwareOutdoorRetryCooldown.IsRestricted(pawn))
+                {
+                    CancelUnsafeCurrentJob(pawn, __instance);
+                    return false;
                 }
 
                 List<ThreatAwareThreat> hostiles = GetRelevantHostilesCached(pawn, map, tick);
@@ -230,33 +225,58 @@ namespace BetterRimAI
             return !pawn.RaceProps.Animal;
         }
 
-        public static bool CouldBeBlockedThing(Pawn pawn, Thing thing, bool forced)
+        public static bool CouldBeBlockedThing(Pawn pawn, Thing thing, bool forced, bool safeTouch = false)
         {
-            return thing != null && ShouldSuppressCandidate(pawn, thing, forced);
+            return thing != null && ShouldSuppressCandidate(pawn, thing, forced, safeTouch);
         }
 
-        internal static bool ShouldSuppressCandidate(Pawn pawn, LocalTargetInfo target, bool forced)
+        internal static bool ShouldSuppressCandidate(Pawn pawn, LocalTargetInfo target, bool forced, bool safeTouch = false)
         {
             if (!ThreatAwareOutdoorRetryCooldown.Applies(pawn, forced)) return false;
             Map map = pawn.Map;
-            bool restricted = ThreatAwareOutdoorRetryCooldown.IsRestricted(pawn);
-            if (!restricted && BlockIndex.Count == 0) return false;
             if (!ThreatAwareOutdoorRetryCooldown.TargetIsOutsideHome(target, map, map.areaManager?.Home)) return false;
+            bool restricted = ThreatAwareOutdoorRetryCooldown.IsRestricted(pawn);
+            if (safeTouch && ThreatAwareSafeWorkCell.TryFind(pawn, target, false, out _)) return false;
             if (restricted) return true;
-            return target.HasThing && IsKnownTargetBlocked(pawn, target.Thing.thingIDNumber, null, target.Cell);
+            if (target.HasThing && IsKnownTargetBlocked(pawn, target.Thing.thingIDNumber, null, target.Cell)) return true;
+            return ThreatAwareOutdoorSafetyMap.Unsafe(pawn, target);
         }
 
-        public static bool ShouldSuppressWorkJob(Pawn pawn, Job job)
+        public static bool ShouldSuppressWorkJob(Pawn pawn, Job job, bool safeTouch = false)
         {
             if (job == null || !ThreatAwareOutdoorRetryCooldown.Applies(pawn, job.playerForced)) return false;
-            if (ThreatAwareOutdoorRetryCooldown.ShouldSuppressOutdoorRetry(pawn, job)) return true;
-            if (BlockIndex.Count == 0) return false;
-            if (!ThreatAwareOutdoorRetryCooldown.JobHasTargetOutsideHome(pawn, job)) return false;
-            return TargetBlocked(pawn, job.targetA, job.def?.defName)
+            if (!safeTouch && job.workGiverDef?.Worker is WorkGiver_Scanner scanner)
+                safeTouch = scanner.PathEndMode == PathEndMode.Touch;
+            if (ThreatAwareOutdoorRetryCooldown.ShouldSuppressOutdoorRetry(pawn, job, safeTouch)) return true;
+            if (BlockIndex.Count != 0 && ThreatAwareOutdoorRetryCooldown.JobHasTargetOutsideHome(pawn, job, safeTouch)
+                && ((!SafeTouchTarget(pawn, job.targetA, safeTouch) && TargetBlocked(pawn, job.targetA, job.def?.defName))
                 || TargetBlocked(pawn, job.targetB, job.def?.defName)
                 || TargetBlocked(pawn, job.targetC, job.def?.defName)
                 || QueueBlocked(pawn, job.targetQueueA, job.def?.defName)
-                || QueueBlocked(pawn, job.targetQueueB, job.def?.defName);
+                || QueueBlocked(pawn, job.targetQueueB, job.def?.defName))) return true;
+            return ProactivelyBlocked(pawn, job.targetA, safeTouch) || ProactivelyBlocked(pawn, job.targetB, false)
+                || ProactivelyBlocked(pawn, job.targetC)
+                || ProactivelyBlockedQueue(pawn, job.targetQueueA)
+                || ProactivelyBlockedQueue(pawn, job.targetQueueB);
+        }
+
+        private static bool SafeTouchTarget(Pawn pawn, LocalTargetInfo target, bool safeTouch)
+            => safeTouch && ThreatAwareSafeWorkCell.TryFind(pawn, target, true, out _);
+
+        private static bool ProactivelyBlocked(Pawn pawn, LocalTargetInfo target, bool safeTouch = false)
+        {
+            if (!ThreatAwareOutdoorRetryCooldown.TargetIsOutsideHome(target, pawn.Map, pawn.Map.areaManager?.Home)) return false;
+            if (!ThreatAwareOutdoorSafetyMap.Unsafe(pawn, target)) return false;
+            if (SafeTouchTarget(pawn, target, safeTouch)) return false;
+            return true;
+        }
+
+        private static bool ProactivelyBlockedQueue(Pawn pawn, List<LocalTargetInfo> targets)
+        {
+            if (targets == null) return false;
+            for (int i = 0; i < targets.Count; i++)
+                if (ProactivelyBlocked(pawn, targets[i])) return true;
+            return false;
         }
 
         private static bool QueueBlocked(Pawn pawn, List<LocalTargetInfo> targets, string jobDef)
@@ -325,20 +345,6 @@ namespace BetterRimAI
             return pawn.playerSettings != null
                    && pawn.playerSettings.UsesConfigurableHostilityResponse
                    && pawn.playerSettings.hostilityResponse == HostilityResponseMode.Attack;
-        }
-
-        private static bool DestinationIsInsideHome(LocalTargetInfo destination, Map map, Area_Home home)
-        {
-            if (!destination.IsValid || map == null || home == null) return false;
-            IntVec3 cell = destination.Cell;
-            if (cell.IsValid && cell.InBounds(map) && ThreatAwareHomeSafety.IsSafeCell(map, home, cell)) return true;
-            if (destination.HasThing && destination.Thing != null)
-            {
-                IntVec3 thingCell = destination.Thing.Position;
-                return thingCell.IsValid && thingCell.InBounds(map)
-                    && ThreatAwareHomeSafety.IsSafeCell(map, home, thingCell);
-            }
-            return false;
         }
 
         private static void RememberGlobalBlock(Map map, Job job, IntVec3 destination, IntVec3 dangerCell, float dangerRadius)
@@ -417,7 +423,7 @@ namespace BetterRimAI
             state.blockedThingId = -1;
         }
 
-        private static List<ThreatAwareThreat> GetRelevantHostilesCached(Pawn pawn, Map map, int tick)
+        internal static List<ThreatAwareThreat> GetRelevantHostilesCached(Pawn pawn, Map map, int tick)
         {
             long key = ((long)map.uniqueID << 32) | (uint)pawn.thingIDNumber;
             if (!HostileCache.TryGetValue(key, out HostileCacheEntry entry))
@@ -435,7 +441,9 @@ namespace BetterRimAI
             for (int i = 0; i < allPawns.Count; i++)
             {
                 Pawn other = allPawns[i];
-                if (other != pawn && !other.Dead && !other.Downed && other.Spawned && other.HostileTo(pawn))
+                if (other != pawn && !other.Dead && !other.Downed && other.Spawned
+                    && (other.HostileTo(pawn) || pawn.HostileTo(other) || other.HostileTo(pawn.Faction))
+                    && (map.generatorDef == null || GenHostility.IsPotentialThreat(other)))
                     entry.hostiles.Add(new ThreatAwareThreat(other));
             }
             // RimWorld's combat registry includes hostile turrets and modded attack structures.

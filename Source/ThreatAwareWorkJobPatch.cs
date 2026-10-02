@@ -35,17 +35,18 @@ namespace BetterRimAI
         [HarmonyTargetMethods]
         public static IEnumerable<MethodBase> TargetMethods() => ThreatAwareScannerTargets.Find(nameof(WorkGiver_Scanner.JobOnThing), typeof(Thing));
         [HarmonyPrefix]
-        public static bool Prefix(Pawn __0, Thing __1, bool __2, ref Job __result)
+        public static bool Prefix(WorkGiver_Scanner __instance, Pawn __0, Thing __1, bool __2, ref Job __result)
         {
-            if (!ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(__0, __1, __2)) return true;
+            if (!ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(__0, __1, __2,
+                    __instance.PathEndMode == PathEndMode.Touch)) return true;
             __result = null;
             ThreatAwareBlockDiagnostics.Once("candidate-rejected-before-movement", __0, __1, null, true, "JobOnThing");
             return false;
         }
         [HarmonyPostfix]
-        public static void Postfix(Pawn __0, bool __2, ref Job __result)
+        public static void Postfix(WorkGiver_Scanner __instance, Pawn __0, bool __2, ref Job __result)
         {
-            ThreatAwareCompletedWork.Filter(__0, __2, ref __result);
+            ThreatAwareCompletedWork.Filter(__0, __2, ref __result, __instance.PathEndMode == PathEndMode.Touch);
         }
     }
 
@@ -55,25 +56,26 @@ namespace BetterRimAI
         [HarmonyTargetMethods]
         public static IEnumerable<MethodBase> TargetMethods() => ThreatAwareScannerTargets.Find(nameof(WorkGiver_Scanner.JobOnCell), typeof(IntVec3));
         [HarmonyPrefix]
-        public static bool Prefix(Pawn __0, IntVec3 __1, bool __2, ref Job __result)
+        public static bool Prefix(WorkGiver_Scanner __instance, Pawn __0, IntVec3 __1, bool __2, ref Job __result)
         {
-            if (!ThreatAwareOutdoorWorkPatch.ShouldSuppressCandidate(__0, __1, __2)) return true;
+            if (!ThreatAwareOutdoorWorkPatch.ShouldSuppressCandidate(__0, __1, __2,
+                    __instance.PathEndMode == PathEndMode.Touch)) return true;
             __result = null;
             ThreatAwareBlockDiagnostics.Once("candidate-rejected-before-movement", __0, null, null, true, "JobOnCell");
             return false;
         }
         [HarmonyPostfix]
-        public static void Postfix(Pawn __0, bool __2, ref Job __result)
+        public static void Postfix(WorkGiver_Scanner __instance, Pawn __0, bool __2, ref Job __result)
         {
-            ThreatAwareCompletedWork.Filter(__0, __2, ref __result);
+            ThreatAwareCompletedWork.Filter(__0, __2, ref __result, __instance.PathEndMode == PathEndMode.Touch);
         }
     }
 
     internal static class ThreatAwareCompletedWork
     {
-        internal static void Filter(Pawn pawn, bool forced, ref Job job)
+        internal static void Filter(Pawn pawn, bool forced, ref Job job, bool safeTouch = false)
         {
-            if (forced || job == null || !ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, job)) return;
+            if (forced || job == null || !ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, job, safeTouch)) return;
             ThreatAwareBlockDiagnostics.Once("candidate-rejected-before-movement", pawn, null, job, true, "completed work candidate");
             job = null;
         }

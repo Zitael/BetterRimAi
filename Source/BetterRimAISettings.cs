@@ -9,6 +9,7 @@ namespace BetterRimAI
         public float routeThreatRadius = 15f;
         public float homeExitThreatRadius = 20f;
         public bool threatDebugLogging = true;
+        public bool remoteWorkLocality = true;
 
         public override void ExposeData()
         {
@@ -16,6 +17,7 @@ namespace BetterRimAI
             Scribe_Values.Look(ref routeThreatRadius, "routeThreatRadius", 15f);
             Scribe_Values.Look(ref homeExitThreatRadius, "homeExitThreatRadius", 20f);
             Scribe_Values.Look(ref threatDebugLogging, "threatDebugLogging", true);
+            Scribe_Values.Look(ref remoteWorkLocality, "remoteWorkLocality", true);
             base.ExposeData();
         }
     }
@@ -59,6 +61,12 @@ namespace BetterRimAI
                 "Debug threat decisions",
                 ref Settings.threatDebugLogging,
                 "Writes throttled BetterRimAI threat decisions to the RimWorld log.");
+
+            listing.GapLine();
+            listing.CheckboxLabeled(
+                "Prefer nearby work at remote sites",
+                ref Settings.remoteWorkLocality,
+                "After a successful long-distance work trip, favor more nearby work of the same type without overriding higher priorities or critical needs.");
 
             listing.End();
         }

@@ -35,9 +35,10 @@ namespace BetterRimAI
         // Positional Harmony arguments avoid foreign parameter-name dependencies AND the
         // allocation/boxing required by object[] __args on every candidate.
         [HarmonyPrefix]
-        public static bool Prefix(Pawn __0, Thing __1, bool __2, ref bool __result)
+        public static bool Prefix(WorkGiver_Scanner __instance, Pawn __0, Thing __1, bool __2, ref bool __result)
         {
-            if (!ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(__0, __1, __2)) return true;
+            if (!ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(__0, __1, __2,
+                    __instance.PathEndMode == PathEndMode.Touch)) return true;
             ThreatAwareBlockDiagnostics.Once("candidate-rejected-before-movement", __0, __1, null, true, "HasJobOnThing");
             __result = false;
             return false;
@@ -51,9 +52,10 @@ namespace BetterRimAI
         public static IEnumerable<MethodBase> TargetMethods() => ThreatAwareScannerTargets.Find(nameof(WorkGiver_Scanner.HasJobOnCell), typeof(IntVec3));
 
         [HarmonyPrefix]
-        public static bool Prefix(Pawn __0, IntVec3 __1, bool __2, ref bool __result)
+        public static bool Prefix(WorkGiver_Scanner __instance, Pawn __0, IntVec3 __1, bool __2, ref bool __result)
         {
-            if (!ThreatAwareOutdoorWorkPatch.ShouldSuppressCandidate(__0, __1, __2)) return true;
+            if (!ThreatAwareOutdoorWorkPatch.ShouldSuppressCandidate(__0, __1, __2,
+                    __instance.PathEndMode == PathEndMode.Touch)) return true;
             ThreatAwareBlockDiagnostics.Once("candidate-rejected-before-movement", __0, null, null, true, "HasJobOnCell");
             __result = false;
             return false;
