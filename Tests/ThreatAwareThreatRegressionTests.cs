@@ -24,6 +24,8 @@ namespace BetterRimAI.Tests
                 prefix: new HarmonyMethod(AccessTools.Method(typeof(CandidateSelectionTests), nameof(HeadlessShamblerKind))));
             headlessCombatHost.Patch(AccessTools.Method(typeof(InvisibilityUtility), "IsPsychologicallyInvisible"),
                 prefix: new HarmonyMethod(AccessTools.Method(typeof(CandidateSelectionTests), nameof(NotAnOverseerSubject))));
+            headlessCombatHost.Patch(AccessTools.Method(typeof(ForbidUtility), "IsForbidden", new[] { typeof(IntVec3), typeof(Pawn) }),
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(CandidateSelectionTests), nameof(NotAnOverseerSubject))));
         }
 
         [OneTimeTearDown]
@@ -32,6 +34,7 @@ namespace BetterRimAI.Tests
             headlessCombatHost.Unpatch(AccessTools.Method(typeof(MechanitorUtility), "IsPlayerOverseerSubject"), HarmonyPatchType.All, headlessCombatHost.Id);
             headlessCombatHost.Unpatch(AccessTools.PropertyGetter(typeof(Pawn), "IsShambler"), HarmonyPatchType.All, headlessCombatHost.Id);
             headlessCombatHost.Unpatch(AccessTools.Method(typeof(InvisibilityUtility), "IsPsychologicallyInvisible"), HarmonyPatchType.All, headlessCombatHost.Id);
+            headlessCombatHost.Unpatch(AccessTools.Method(typeof(ForbidUtility), "IsForbidden", new[] { typeof(IntVec3), typeof(Pawn) }), HarmonyPatchType.All, headlessCombatHost.Id);
         }
 
         private static bool NotAnOverseerSubject(ref bool __result)
@@ -180,6 +183,8 @@ namespace BetterRimAI.Tests
         [TestCase("insect")]
         [TestCase("shambler")]
         [TestCase("manhunter")]
+        [TestCase("mechanoid")]
+        [TestCase("cultist")]
         public void AllHostileMobileKindsEnterThreatCacheAndBlockOutdoorRetries(string kind)
         {
             PrepareCombatFixture();
@@ -202,6 +207,77 @@ namespace BetterRimAI.Tests
             Pawn animal = MakeCombatPawn("animal");
             Assert.That(animal.HostileTo(pawn), Is.False);
             Assert.That(ReadThreats(100).Count, Is.Zero);
+        }
+
+        private static bool StandableForHeadlessSnapshot(ref bool __result)
+        {
+            __result = true;
+            return false;
+        }
+
+        [Test]
+        public void NewlyArrivedHostileRejectsOutdoorCandidateBeforeAnyPathStarts()
+        {
+            PrepareCombatFixture();
+            map.terrainGrid = Bare<TerrainGrid>();
+            ThreatAwareOutdoorRetryCooldown.Reset();
+            var geometryHost = new Harmony("BetterRimAI.tests.proactive-grid");
+            var standable = AccessTools.Method(typeof(GenGrid), "Standable", new[] { typeof(IntVec3), typeof(Map) });
+            geometryHost.Patch(standable, prefix: new HarmonyMethod(AccessTools.Method(typeof(CandidateSelectionTests), nameof(StandableForHeadlessSnapshot))));
+            try
+            {
+                Pawn hostile = MakeCombatPawn("mechanoid");
+                var farOutside = MakeThing(81, new IntVec3(60, 0, 60));
+                farOutside.def = Bare<ThingDef>();
+                farOutside.def.size = new IntVec2(1, 1);
+                Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, farOutside, false), Is.True);
+                Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, indoor, false), Is.False);
+                var pawns = (List<Pawn>)AccessTools.Field(typeof(MapPawns), "pawnsSpawned").GetValue(map.mapPawns);
+                Set(map.mapPawns, "pawnsSpawned", null);
+                for (int i = 0; i < 100000; i++)
+                    if (!ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, farOutside, false)) Assert.Fail("warm pre-travel gate lost its cached answer");
+                Set(map.mapPawns, "pawnsSpawned", pawns);
+                Set(hostile, "mapIndexOrState", (sbyte)-1);
+                Set(ticks, "ticksGameInt", 161);
+                Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, farOutside, false), Is.False);
+            }
+            finally { geometryHost.Unpatch(standable, HarmonyPatchType.All, geometryHost.Id); }
+        }
+
+        [Test]
+        public void ActiveTurretBlocksBeforeTravelAndPowerOffClearsSnapshot()
+        {
+            PrepareCombatFixture();
+            map.terrainGrid = Bare<TerrainGrid>();
+            ThreatAwareOutdoorRetryCooldown.Reset();
+            var geometryHost = new Harmony("BetterRimAI.tests.proactive-turret");
+            var standable = AccessTools.Method(typeof(GenGrid), "Standable", new[] { typeof(IntVec3), typeof(Map) });
+            geometryHost.Patch(standable, prefix: new HarmonyMethod(AccessTools.Method(typeof(CandidateSelectionTests), nameof(StandableForHeadlessSnapshot))));
+            try
+            {
+                TestTurret turret = MakeTurret(new IntVec3(2, 0, 1));
+                var target = MakeThing(82, new IntVec3(20, 0, 1));
+                target.def = Bare<ThingDef>();
+                target.def.size = new IntVec2(1, 1);
+                Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, target, false), Is.True);
+                var power = Bare<CompPowerTrader>();
+                power.parent = turret;
+                turret.AllComps.Add(power);
+                Set(ticks, "ticksGameInt", 161);
+                Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, target, false), Is.False);
+            }
+            finally { geometryHost.Unpatch(standable, HarmonyPatchType.All, geometryHost.Id); }
+        }
+
+        [Test]
+        public void DeadOrDownedHostileDoesNotEnterCombatSnapshot()
+        {
+            PrepareCombatFixture();
+            Pawn hostile = MakeCombatPawn("cultist");
+            Set(hostile.health, "healthState", PawnHealthState.Down);
+            Assert.That(ReadThreats(100).Count, Is.Zero);
+            Set(hostile.health, "healthState", PawnHealthState.Dead);
+            Assert.That(ReadThreats(161).Count, Is.Zero);
         }
 
         [Test]

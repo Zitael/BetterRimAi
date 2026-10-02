@@ -63,18 +63,19 @@ namespace BetterRimAI
             return entry.restriction.Active;
         }
 
-        public static bool ShouldSuppressOutdoorRetry(Pawn pawn, Job job)
+        public static bool ShouldSuppressOutdoorRetry(Pawn pawn, Job job, bool safeTouch = false)
         {
             return job != null && Applies(pawn, job.playerForced)
-                && IsRestricted(pawn) && JobHasTargetOutsideHome(pawn, job);
+                && IsRestricted(pawn) && JobHasTargetOutsideHome(pawn, job, safeTouch);
         }
 
-        internal static bool JobHasTargetOutsideHome(Pawn pawn, Job job)
+        internal static bool JobHasTargetOutsideHome(Pawn pawn, Job job, bool safeTouch = false)
         {
             Map map = pawn?.Map;
             Area_Home home = map?.areaManager?.Home;
             if (home == null || job == null) return false;
-            if (TargetIsOutsideHome(job.targetA, map, home)
+            if ((TargetIsOutsideHome(job.targetA, map, home)
+                 && (!safeTouch || !ThreatAwareSafeWorkCell.TryFind(pawn, job.targetA, true, out _)))
                 || TargetIsOutsideHome(job.targetB, map, home)
                 || TargetIsOutsideHome(job.targetC, map, home)) return true;
             // Only completed jobs have queues; scanner candidates stay O(1).

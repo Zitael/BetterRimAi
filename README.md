@@ -121,14 +121,17 @@ Feature work goes to branches and pull requests. `main` is kept as the stable/te
 
 ## Outdoor candidate selection and performance
 
-The candidate gate is driven by **observed unsafe-route evidence**, not by the mere
-presence of a hostile somewhere on the map. A previously unknown route still reaches
-`TryEnterNextPathCell`, which checks the actual path before allowing the next movement
-step. One safety-net cancellation can therefore occur when danger is first discovered;
-subsequent autonomous outdoor candidates are filtered before travelling.
+The candidate gate first consults a **60-tick map danger snapshot**. Hostile sources
+create exterior risk zones; one standability flood from protected Home cells identifies
+outdoor cells reachable without crossing those zones. Subsequent scanner candidates need
+one indexed lookup. This rejects known unsafe outdoor work before travel. The existing
+actual-path guard remains a last resort if vanilla chooses a different route or danger
+changes after selection. It now checks exterior path cells even when the target itself
+is inside Home (for example, an outer wall approached from outdoors).
 
-- `HasJobOnThing` / `HasJobOnCell` reject exterior candidates while that pawn's route
-  restriction is active. Vanilla scanners continue looking for another target, including
+- `HasJobOnThing` / `HasJobOnCell` reject exterior candidates when the danger snapshot
+  says a safe route is unavailable or while that pawn's observed-route restriction is
+  active. Vanilla scanners continue looking for another target, including
   indoor targets of the **same JobDef**. Home cells and enclosed unpainted Home pockets
   use the existing `ThreatAwareHomeSafety` definition.
 - `JobOnThing` / `JobOnCell` also guard direct construction and inspect completed jobs'
@@ -151,22 +154,25 @@ subsequent autonomous outdoor candidates are filtered before travelling.
 ### Cost boundaries
 
 The warm Thing/Cell scanner gate is O(1)-like: eligibility checks, cached pawn evidence,
-protected-cell lookup and an indexed target lookup. It allocates no probe Job or Harmony
+protected-cell lookup and an indexed reachability/target lookup. It allocates no probe Job or Harmony
 `object[]` argument array and performs no reflection, LINQ, pathfinding or hostile scan.
 Reflection/type discovery is startup-only; Harmony uses positional `__0`/`__1`/`__2`
 bindings, including optional Pick Up And Haul support, to tolerate foreign parameter names.
 `StartPath` cache invalidation now uses direct field access.
 
-Exceptional work is bounded by events/cache expiry: a new pawn's first encounter with
-known target evidence and its 120-tick revalidation can inspect the cached hostile list;
-the list rebuild is throttled to 60 ticks. The existing Home flood-fill runs on cache
-creation/1200-tick expiry. Completed-job queue validation is O(queue length), outside
-individual scanner-candidate checks. The existing movement safety net samples the actual
-route/threats on a new path, six traversed cells, or 120-tick recheck. No `PatherTick` patch
-or extra pathfinding has been added.
+Exceptional work is bounded by events/cache expiry: the first outdoor candidate on a map
+and subsequent 60-tick refreshes rebuild one map danger grid and one standability flood.
+Hostile snapshots are throttled to 60 ticks. The existing Home flood-fill runs on cache
+creation/1200-tick expiry. Selected exterior construction jobs may use vanilla reachability
+to verify a protected interaction cell; the scanner's per-target gate does not pathfind.
+Completed-job queue validation is O(queue length), outside individual scanner-candidate
+checks. The movement safety net samples the actual route/threats on a new path, six
+traversed cells, or 120-tick recheck. No `PatherTick` patch has been added.
 
-Mobile threats use vanilla hostility, including hostile insects, shamblers, enemy pawns
-and animals in an aggressive mental state; peaceful animals are excluded. The same
+Mobile threats use vanilla hostility in either pawn direction or against its player faction and native
+potential-threat state (where the full map runtime is available). This covers hostile
+mechanoids, human/modded-faction pawns, insects, shamblers and aggressive animals; dead,
+downed, dormant/deactivated or otherwise inactive entities are excluded. The same
 60-tick snapshot also reads registered hostile combat structures from
 `AttackTargetsCache`, without scanning every building. Turrets use their actual attack
 verb and effective weapon range rather than the mobile-threat proximity radius. Native
@@ -177,6 +183,25 @@ it costs one byte per map cell per checked firing source. Only route validation 
 expired evidence can populate it. Warm candidate selection never calls a shooting verb.
 Power-off, despawn and changed hostility are reflected when expired evidence rebuilds
 the threat snapshot. Home safety semantics and all player overrides remain unchanged.
+
+For `Touch` jobs, `StartPath` prefers a reachable protected work cell next to the original
+target. This keeps the vanilla job target and its reservation while letting an outer wall,
+ship part, blueprint or frame be repaired/constructed from inside when possible. An
+exterior construction candidate with a protected work side stays eligible under threat;
+an inaccessible safe side is rejected at completed-job validation. Direct player orders
+and drafted or Attack-response pawns bypass this choice.
+
+With **Prefer nearby work at remote sites** enabled, after a successful work trip of at
+least 50 cells from Home, the same WorkGiver gets a
+temporary local preference within 24 cells of the remote site. WorkGivers of strictly
+higher priority remain ahead; if the preferred giver has no valid nearby work, vanilla
+continues down its normal list. The preference expires after 2500 ticks or leaving the
+site and does not apply to emergency work, forced orders or critical Food/Rest below 20%.
+Vanilla candidate validity, reservations and reachability remain in charge.
+
+The preliminary map grid conservatively uses weapon-range envelopes for turrets; the
+path guard uses actual verb line of fire. This avoids thousands of shooting checks per
+snapshot but can temporarily defer an outdoor job behind cover until no threat remains.
 
 With debug logging enabled, per-pawn/per-stage logs are limited to once per 600 ticks:
 `candidate-rejected-before-movement`, `active-path-cancelled-safety-net`, and
@@ -193,8 +218,8 @@ or pathfinder. It is a regression test, **not a measurement of in-game FPS**. Th
 mod list and full Unity simulation still need the following short playtest:
 
 1. Save a colony with indoor hauling/cleaning/crafting available and exterior hauling or
-   cell work beyond a raider-guarded exit. Use undrafted Flee/Ignore pawns. After the first
-   unknown unsafe route is stopped, verify indoor work is selected without repeated
+   cell work beyond a raider-guarded exit. Use undrafted Flee/Ignore pawns. Verify that
+   outdoor candidates are rejected before travel and indoor work is selected without
    start/cancel oscillation. Check both Thing and Cell work and an enclosed Home-paint hole.
 2. Use a forced outdoor order, draft the pawn, and separately set Attack response. Verify
    each can leave; return to autonomous Flee/Ignore and verify protection resumes.
@@ -208,12 +233,23 @@ mod list and full Unity simulation still need the following short playtest:
    Include a narrow firing lane farther along the route. Verify autonomous pawns stay
    safe, walls block turret fire, and removing the turret or its power restores outdoor
    work after revalidation. Compare enabled/disabled using this turret save too.
+6. Repeat the raid with hostile mechanoids and a modded hostile faction/cultist. Check
+   dead, downed, dormant and disabled enemies no longer hold the restriction after expiry.
+7. Damage an exterior wall or ship part and place a blueprint/roof/pipe near the Home
+   boundary. Verify the pawn works from a reachable inside cell and still reserves the
+   original target. If no safe side exists, verify it chooses other safe work during a raid.
+8. Send a pawn to mine or construct more than 50 cells from Home. After a completed job,
+   verify another nearby job of the same giver is preferred over lower-priority base work.
+   Raise Food or Rest below 20% and verify the pawn can return; repeat for urgent medical
+   work and a direct forced order.
 
 ### Same-save enabled/disabled FPS comparison
 
 Use the in-game **Threat-aware outdoor work** checkbox; leave the mod and mod list installed
 for both runs. Disable **Debug threat decisions** for timing. Keep the same resolution,
 camera, zoom, game speed, pawn count and FPS/TPS overlay/profiler for every run.
+Keep **Prefer nearby work at remote sites** at the same setting in both raid runs. For a
+remote-mine comparison, toggle that setting instead while holding threat avoidance fixed.
 
 Load the same paused raid save, enable the feature, allow about 15 seconds of warm-up,
 then record FPS/frame time and TPS over 60 seconds. Reload that exact save, disable the

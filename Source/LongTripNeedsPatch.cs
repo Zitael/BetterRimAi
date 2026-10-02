@@ -18,6 +18,7 @@ namespace BetterRimAI
     public static class LongTripNeedsPatch
     {
         private const float LongTripDistance = 50f;
+        internal const int LongTripDistanceSquared = 50 * 50;
         // These are deliberately earlier than vanilla's urgent thresholds: the whole point is
         // to prepare before a long trip, not react after the pawn has already crossed the map.
         private const float FoodPrepareThreshold = 0.45f;

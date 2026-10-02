@@ -13,6 +13,7 @@ namespace BetterRimAI
         private readonly Verb attackVerb;
         private readonly float rangeSquared;
         internal bool IsRangedStructure => attackVerb != null;
+        internal float Range => attackVerb == null ? 0f : (float)Math.Sqrt(rangeSquared);
 
         internal ThreatAwareThreat(Pawn pawn)
         {
@@ -34,10 +35,13 @@ namespace BetterRimAI
             threat = default;
             Thing source = target?.Thing;
             if (source == null || source is Pawn || !source.Spawned || source.Destroyed
-                || source.Map != pawn.Map || !source.HostileTo(pawn) || target.ThreatDisabled(pawn)) return false;
+                || source.Map != pawn.Map
+                || !(source.HostileTo(pawn) || pawn.HostileTo(source) || source.HostileTo(pawn.Faction))
+                || target.ThreatDisabled(pawn)) return false;
             Verb verb = (source as IAttackTargetSearcher)?.CurrentEffectiveVerb;
             if (source is Building_Turret && (verb == null || verb.IsMeleeAttack)) return false;
             if (verb != null && (!verb.Available() || verb.IsMeleeAttack)) return false;
+            if (pawn.Map.generatorDef != null && !GenHostility.IsPotentialThreat(target)) return false;
             threat = new ThreatAwareThreat(source, verb);
             return true;
         }

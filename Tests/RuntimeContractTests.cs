@@ -17,6 +17,9 @@ namespace BetterRimAI.Tests
         {
             Assert.That(AccessTools.Method(typeof(Pawn_PathFollower), "TryEnterNextPathCell"), Is.Not.Null);
             Assert.That(AccessTools.Method(typeof(Pawn_PathFollower), "StartPath"), Is.Not.Null);
+            Assert.That(AccessTools.Method(typeof(Pawn_PathFollower), "StartPath", new[] { typeof(LocalTargetInfo), typeof(PathEndMode) }), Is.Not.Null);
+            Assert.That(AccessTools.Method(typeof(Pawn_WorkSettings), "get_WorkGiversInOrderNormal"), Is.Not.Null);
+            Assert.That(AccessTools.Method(typeof(Pawn_JobTracker), "EndCurrentJob"), Is.Not.Null);
             foreach (Type type in new[] { typeof(ThinkNode_JobGiver), typeof(JobGiver_Work) })
                 Assert.That(AccessTools.DeclaredMethod(type, "TryIssueJobPackage", new[] { typeof(Pawn), typeof(JobIssueParams) }), Is.Not.Null, type.FullName);
             foreach (string name in new[] { "HasJobOnThing", "JobOnThing", "HasJobOnCell", "JobOnCell" })
@@ -46,7 +49,9 @@ namespace BetterRimAI.Tests
                     ThreatAwareThingJobPatch.TargetMethods().ToArray(),
                     ThreatAwareCellJobPatch.TargetMethods().ToArray(),
                     ThreatAwareNonScanJobPatch.TargetMethods().ToArray(),
-                    ThreatAwareThinkNodePatch.TargetMethods().ToArray()
+                    ThreatAwareThinkNodePatch.TargetMethods().ToArray(),
+                    RemoteWorkThingCandidatePatch.TargetMethods().ToArray(),
+                    RemoteWorkCellCandidatePatch.TargetMethods().ToArray()
                 };
                 for (int g = 0; g < groups.Length; g++)
                 {
@@ -58,7 +63,7 @@ namespace BetterRimAI.Tests
                         Assert.That(method.IsAbstract, Is.False);
                         Assert.That(method.ContainsGenericParameters, Is.False);
                         Assert.That(method.GetParameters()[0].ParameterType, Is.EqualTo(typeof(Pawn)));
-                        Assert.That(method.ReturnType, Is.EqualTo(g < 2 ? typeof(bool) : g == 5 ? typeof(ThinkResult) : typeof(Job)));
+                        Assert.That(method.ReturnType, Is.EqualTo(g < 2 || g >= 6 ? typeof(bool) : g == 5 ? typeof(ThinkResult) : typeof(Job)));
                     }
                 }
                 Assert.That(groups[5].Any(m => m.DeclaringType == typeof(JobGiver_Work)), Is.True);

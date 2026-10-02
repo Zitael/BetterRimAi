@@ -103,10 +103,10 @@ namespace BetterRimAI.Tests
         public void AutonomousUnsafeThingAndCellAreRejectedBeforeMovement()
         {
             bool result = true;
-            Assert.That(ThreatAwareBlockedThingCandidatePatch.Prefix(pawn, outdoor, false, ref result), Is.False);
+            Assert.That(ThreatAwareBlockedThingCandidatePatch.Prefix(new RenamedScanner(), pawn, outdoor, false, ref result), Is.False);
             Assert.That(result, Is.False);
             result = true;
-            Assert.That(ThreatAwareBlockedCellCandidatePatch.Prefix(pawn, Outside, false, ref result), Is.False);
+            Assert.That(ThreatAwareBlockedCellCandidatePatch.Prefix(new RenamedScanner(), pawn, Outside, false, ref result), Is.False);
             Assert.That(result, Is.False);
         }
 
@@ -117,7 +117,7 @@ namespace BetterRimAI.Tests
             Assert.That(ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, new Job { def = def, targetA = outdoor }), Is.True);
             Assert.That(ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, new Job { def = def, targetA = indoor }), Is.False);
             bool result = true;
-            Assert.That(ThreatAwareBlockedThingCandidatePatch.Prefix(pawn, indoor, false, ref result), Is.True);
+            Assert.That(ThreatAwareBlockedThingCandidatePatch.Prefix(new RenamedScanner(), pawn, indoor, false, ref result), Is.True);
         }
 
         [Test]
@@ -268,8 +268,32 @@ namespace BetterRimAI.Tests
         }
         public class RenamedScanner : WorkGiver_Scanner
         {
+            public override PathEndMode PathEndMode => PathEndMode.OnCell;
             [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
             public override bool HasJobOnThing(Pawn worker, Thing item, bool manual = false) => true;
+        }
+
+        public class RenamedCellScanner : WorkGiver_Scanner
+        {
+            public override PathEndMode PathEndMode => PathEndMode.OnCell;
+            [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+            public override bool HasJobOnCell(Pawn worker, IntVec3 tile, bool manual = false) => true;
+        }
+
+        [Test]
+        public void CellScannerHarmonyPrefixBindsInstanceAndForeignParameterNames()
+        {
+            var harmony = new Harmony("BetterRimAI.tests.cell-positional");
+            MethodInfo original = AccessTools.DeclaredMethod(typeof(RenamedCellScanner), "HasJobOnCell");
+            try
+            {
+                harmony.Patch(original, prefix: new HarmonyMethod(AccessTools.Method(typeof(ThreatAwareBlockedCellCandidatePatch), "Prefix")));
+                var scanner = new RenamedCellScanner();
+                Assert.That((bool)original.Invoke(scanner, new object[] { pawn, Outside, false }), Is.False);
+                Assert.That((bool)original.Invoke(scanner, new object[] { pawn, Inside, false }), Is.True);
+                Assert.That((bool)original.Invoke(scanner, new object[] { pawn, Outside, true }), Is.True);
+            }
+            finally { harmony.Unpatch(original, HarmonyPatchType.All, harmony.Id); }
         }
 
         [TestCase(typeof(ThreatAwareBlockedThingCandidatePatch))]
@@ -312,7 +336,7 @@ namespace BetterRimAI.Tests
         }
 
         [Test]
-        public void NoEvidenceDoesNotScanHostilesJustBecauseAnOutdoorCandidateExists()
+        public void HeadlessMissingTerrainDoesNotBlockOutdoorCandidates()
         {
             ThreatAwareOutdoorRetryCooldown.Reset();
             map.mapPawns = null;
