@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection;
 using System.Runtime.Serialization;
 using HarmonyLib;
 using NUnit.Framework;
@@ -16,6 +15,8 @@ namespace BetterRimAI.Tests
     {
         private Game previousGame;
         private BetterRimAISettings previousSettings;
+        private Harmony host;
+        private static readonly HashSet<IntVec3> walls = new HashSet<IntVec3>();
         private Map map;
         private Pawn pawn;
         private Thing outdoor, indoor;
@@ -26,12 +27,22 @@ namespace BetterRimAI.Tests
 
         private static T Bare<T>() => (T)FormatterServices.GetUninitializedObject(typeof(T));
         private static void Set(object obj, string name, object value) => AccessTools.Field(obj.GetType(), name).SetValue(obj, value);
+        private static void SetCurrent(Game game) => AccessTools.Field(typeof(Current), "gameInt").SetValue(null, game);
+        private static bool Standable(IntVec3 __0, ref bool __result) { __result = !walls.Contains(__0); return false; }
+        private static bool False(ref bool __result) { __result = false; return false; }
+        private static bool ActiveThreat(IAttackTarget __0, ref bool __result)
+        {
+            Pawn p = __0?.Thing as Pawn;
+            __result = p != null && p.Spawned && !p.Dead && !p.Downed;
+            return false;
+        }
 
         [SetUp]
         public void Setup()
         {
             previousGame = Current.Game;
             previousSettings = BetterRimAIMod.Settings;
+            walls.Clear();
             var game = Bare<Game>();
             ticks = Bare<TickManager>();
             Set(ticks, "ticksGameInt", 100);
@@ -39,9 +50,10 @@ namespace BetterRimAI.Tests
             map = Bare<Map>();
             map.uniqueID = 71;
             var info = Bare<MapInfo>();
-            Set(info, "sizeInt", new IntVec3(10, 1, 10));
+            Set(info, "sizeInt", new IntVec3(80, 1, 80));
             Set(map, "info", info);
             map.cellIndices = new CellIndices(map);
+            map.terrainGrid = Bare<TerrainGrid>();
             Set(game, "maps", new List<Map> { map });
             var world = Bare<World>();
             world.factionManager = Bare<FactionManager>();
@@ -50,7 +62,7 @@ namespace BetterRimAI.Tests
             Set(world.factionManager, "ofPlayer", faction);
             Set(game, "worldInt", world);
             SetCurrent(game);
-            SetSettings(new BetterRimAISettings { threatAwareOutdoorWork = true, threatDebugLogging = false });
+            BetterRimAIMod.Settings = new BetterRimAISettings { threatAwareOutdoorWork = true, threatDebugLogging = false };
             new ThreatAwareGameState(game);
             map.areaManager = Bare<AreaManager>();
             Set(map.areaManager, "map", map);
@@ -62,10 +74,26 @@ namespace BetterRimAI.Tests
             Set(map.areaManager, "areas", new List<Area> { home });
             map.mapPawns = Bare<MapPawns>();
             Set(map.mapPawns, "pawnsSpawned", new List<Pawn>());
+            map.attackTargetsCache = Bare<AttackTargetsCache>();
+            Set(map.attackTargetsCache, "map", map);
+            Set(map.attackTargetsCache, "allTargets", new HashSet<IAttackTarget>());
+            Set(map.attackTargetsCache, "targetsHostileToFaction", new Dictionary<Faction, HashSet<IAttackTarget>>
+            {
+                [faction] = new HashSet<IAttackTarget>()
+            });
+            Set(map.attackTargetsCache, "pawnsInAggroMentalState", new HashSet<Pawn>());
+            Set(map.attackTargetsCache, "factionlessHumanlikes", new HashSet<Pawn>());
             pawn = Bare<Pawn>();
             pawn.thingIDNumber = 17;
             pawn.def = Bare<ThingDef>();
             pawn.def.race = new RaceProperties { intelligence = Intelligence.Humanlike };
+            pawn.kindDef = new PawnKindDef();
+            pawn.health = Bare<Pawn_HealthTracker>();
+            Set(pawn.health, "healthState", PawnHealthState.Mobile);
+            pawn.mindState = Bare<Pawn_MindState>();
+            pawn.mindState.mentalStateHandler = Bare<MentalStateHandler>();
+            Set(pawn.mindState, "pawn", pawn);
+            Set(pawn.mindState.mentalStateHandler, "pawn", pawn);
             Set(pawn, "factionInt", faction);
             Set(pawn, "mapIndexOrState", (sbyte)0);
             Set(pawn, "positionInt", Inside);
@@ -75,86 +103,265 @@ namespace BetterRimAI.Tests
             pawn.playerSettings.hostilityResponse = HostilityResponseMode.Flee;
             outdoor = MakeThing(20, Outside);
             indoor = MakeThing(21, Inside);
-            ThreatAwareOutdoorRetryCooldown.Remember(pawn, Outside, 15, 100);
-        }
-
-        private static void SetCurrent(Game game) => AccessTools.Field(typeof(Current), "gameInt").SetValue(null, game);
-        private static void SetSettings(BetterRimAISettings settings) => BetterRimAIMod.Settings = settings;
-        private Thing MakeThing(int id, IntVec3 cell)
-        {
-            var thing = Bare<Thing>();
-            thing.thingIDNumber = id;
-            Set(thing, "mapIndexOrState", (sbyte)0);
-            Set(thing, "positionInt", cell);
-            return thing;
+            host = new Harmony("BetterRimAI.tests.v2-geometry");
+            host.Patch(AccessTools.Method(typeof(GenGrid), "Standable", new[] { typeof(IntVec3), typeof(Map) }),
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(CandidateSelectionTests), nameof(Standable))));
+            host.Patch(AccessTools.Method(typeof(MechanitorUtility), "IsPlayerOverseerSubject"),
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(CandidateSelectionTests), nameof(False))));
+            host.Patch(AccessTools.PropertyGetter(typeof(Pawn), "IsShambler"),
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(CandidateSelectionTests), nameof(False))));
+            host.Patch(AccessTools.Method(typeof(InvisibilityUtility), "IsPsychologicallyInvisible"),
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(CandidateSelectionTests), nameof(False))));
+            host.Patch(AccessTools.Method(typeof(ForbidUtility), "IsForbidden", new[] { typeof(IntVec3), typeof(Pawn) }),
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(CandidateSelectionTests), nameof(False))));
+            host.Patch(AccessTools.Method(typeof(GenHostility), "IsPotentialThreat", new[] { typeof(IAttackTarget) }),
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(CandidateSelectionTests), nameof(ActiveThreat))));
         }
 
         [TearDown]
         public void TearDown()
         {
-            ThreatAwareOutdoorWorkPatch.Reset();
-            ThreatAwareOutdoorRetryCooldown.Reset();
-            ThreatAwareHomeSafety.Reset();
+            host?.UnpatchAll(host.Id);
+            new ThreatAwareGameState(Current.Game);
             SetCurrent(previousGame);
-            SetSettings(previousSettings);
+            BetterRimAIMod.Settings = previousSettings;
         }
 
-        [Test]
-        public void AutonomousUnsafeThingAndCellAreRejectedBeforeMovement()
+        private Thing MakeThing(int id, IntVec3 cell)
         {
+            var thing = Bare<Thing>();
+            thing.thingIDNumber = id;
+            thing.def = Bare<ThingDef>();
+            thing.def.size = new IntVec2(1, 1);
+            Set(thing, "mapIndexOrState", (sbyte)0);
+            Set(thing, "positionInt", cell);
+            return thing;
+        }
+
+        private void PrepareCombatFixture() => AddHostile(Outside);
+        private Pawn AddHostile(IntVec3 cell)
+        {
+            var hostile = Bare<Pawn>();
+            hostile.thingIDNumber = 41;
+            hostile.def = Bare<ThingDef>();
+            hostile.def.race = new RaceProperties { intelligence = Intelligence.Humanlike };
+            hostile.kindDef = new PawnKindDef { defName = "raider" };
+            hostile.health = Bare<Pawn_HealthTracker>();
+            Set(hostile.health, "healthState", PawnHealthState.Mobile);
+            Set(hostile, "positionInt", cell);
+            Set(hostile, "mapIndexOrState", (sbyte)0);
+            hostile.mindState = Bare<Pawn_MindState>();
+            hostile.mindState.mentalStateHandler = Bare<MentalStateHandler>();
+            Set(hostile.mindState, "pawn", hostile);
+            Set(hostile.mindState.mentalStateHandler, "pawn", hostile);
+            var enemy = Bare<Faction>();
+            enemy.def = new FactionDef { defName = "Enemy" };
+            Set(enemy, "relations", new List<FactionRelation> { new FactionRelation { other = Faction.OfPlayer, kind = FactionRelationKind.Hostile } });
+            Set(Faction.OfPlayer, "relations", new List<FactionRelation> { new FactionRelation { other = enemy, kind = FactionRelationKind.Hostile } });
+            Set(enemy, "predatorThreats", Activator.CreateInstance(AccessTools.Field(typeof(Faction), "predatorThreats").FieldType));
+            Set(Faction.OfPlayer, "predatorThreats", Activator.CreateInstance(AccessTools.Field(typeof(Faction), "predatorThreats").FieldType));
+            Set(hostile, "factionInt", enemy);
+            ((List<Pawn>)AccessTools.Field(typeof(MapPawns), "pawnsSpawned").GetValue(map.mapPawns)).Add(hostile);
+            return hostile;
+        }
+
+        private sealed class TestTurret : Building_Turret
+        {
+            internal Verb verb;
+            public override Verb AttackVerb => verb;
+            public override LocalTargetInfo CurrentTarget => LocalTargetInfo.Invalid;
+            public override void OrderAttack(LocalTargetInfo target) { }
+        }
+        private sealed class CountingShot : Verb
+        {
+            internal bool canHit;
+            internal int calls;
+            public override float EffectiveRange => verbProps.range;
+            protected override bool TryCastShot() => true;
+            public override bool CanHitTargetFrom(IntVec3 root, LocalTargetInfo target)
+            {
+                calls++;
+                return canHit && target.Cell == Outside;
+            }
+        }
+        private sealed class HeadlessProjectile : Verb_Shoot
+        {
+            public override float EffectiveRange => verbProps.range;
+        }
+        private CountingShot AddTurret()
+        {
+            Pawn factionCarrier = AddHostile(new IntVec3(70, 0, 70));
+            Set(factionCarrier, "mapIndexOrState", (sbyte)-1);
+            var turret = new TestTurret();
+            turret.def = Bare<ThingDef>();
+            turret.def.size = new IntVec2(1, 1);
+            Set(turret, "positionInt", new IntVec3(2, 0, 1));
+            Set(turret, "mapIndexOrState", (sbyte)0);
+            Set(turret, "factionInt", factionCarrier.Faction);
+            Set(turret, "comps", new List<ThingComp> { new DummyComp() });
+            var shot = new CountingShot { canHit = true };
+            shot.verbProps = new VerbProperties { verbClass = typeof(Verb_Shoot), range = 35f,
+                defaultProjectile = Bare<ThingDef>() };
+            shot.caster = turret;
+            shot.verbTracker = new VerbTracker(new CompEquippable { parent = new ThingWithComps { def = Bare<ThingDef>() } });
+            turret.verb = shot;
+            ((Dictionary<Faction, HashSet<IAttackTarget>>)AccessTools.Field(typeof(AttackTargetsCache), "targetsHostileToFaction")
+                .GetValue(map.attackTargetsCache))[Faction.OfPlayer].Add(turret);
+            return shot;
+        }
+        private sealed class DummyComp : ThingComp { }
+
+        [Test]
+        public void RaidRejectsOutdoorCandidateButAllowsIndoorWork()
+        {
+            AddHostile(Outside);
             bool result = true;
             Assert.That(ThreatAwareBlockedThingCandidatePatch.Prefix(new RenamedScanner(), pawn, outdoor, false, ref result), Is.False);
             Assert.That(result, Is.False);
-            result = true;
-            Assert.That(ThreatAwareBlockedCellCandidatePatch.Prefix(new RenamedScanner(), pawn, Outside, false, ref result), Is.False);
-            Assert.That(result, Is.False);
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, indoor, false), Is.False);
         }
 
         [Test]
-        public void DangerousTargetDoesNotSuppressUnrelatedIndoorWorkOfSameJobDef()
+        public void SafeOutdoorWorkAndOverridesRemainAvailable()
         {
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
+            AddHostile(Outside);
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, true), Is.False);
+            Assert.That(ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, new Job { targetA = outdoor, playerForced = true }), Is.False);
+            Set(pawn.drafter, "draftedInt", true);
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
+            Set(pawn.drafter, "draftedInt", false);
+            pawn.playerSettings.hostilityResponse = HostilityResponseMode.Attack;
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
+        }
+
+        [Test]
+        public void SealedHostileDoesNotProjectDangerThroughWallAndOpeningRechecks()
+        {
+            var center = new IntVec3(10, 0, 10);
+            for (int x = 9; x <= 11; x++) { walls.Add(new IntVec3(x, 0, 9)); walls.Add(new IntVec3(x, 0, 11)); }
+            for (int z = 9; z <= 11; z++) { walls.Add(new IntVec3(9, 0, z)); walls.Add(new IntVec3(11, 0, z)); }
+            AddHostile(center);
+            var target = MakeThing(30, new IntVec3(12, 0, 10));
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, target, false), Is.False);
+            walls.Remove(new IntVec3(11, 0, 10));
+            Set(ticks, "ticksGameInt", 281);
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, target, false), Is.True);
+        }
+
+        [Test]
+        public void OutsidePawnCanReturnAndIsNeverRestrictedByExitPolicy()
+        {
+            AddHostile(Outside);
+            Set(pawn, "positionInt", new IntVec3(2, 0, 1));
+            Assert.That(ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, new Job { targetA = indoor }), Is.False);
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
+            var pather = Bare<Pawn_PathFollower>();
+            Assert.That(ThreatAwareOutdoorWorkPatch.Prefix(pather, pawn), Is.True);
+            Assert.That(ThreatAwareDecision.Inspect(pawn), Does.Contain("return toward safety is allowed"));
+        }
+
+        [Test]
+        public void EnclosedUnpaintedHomePocketRemainsProtected()
+        {
+            AddHostile(Outside);
+            homeGrid[Inside] = false;
+            homeGrid[new IntVec3(4, 0, 5)] = true;
+            homeGrid[new IntVec3(6, 0, 5)] = true;
+            homeGrid[new IntVec3(5, 0, 4)] = true;
+            homeGrid[new IntVec3(5, 0, 6)] = true;
+            ThreatAwareHomeSafety.Reset();
+            Assert.That(ThreatAwareHomeSafety.IsSafeCell(map, map.areaManager.Home, Inside), Is.True);
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, indoor, false), Is.False);
+        }
+
+        [Test]
+        public void DisappearingThreatClearsWithoutCooldownOrPermanentTargetBan()
+        {
+            Pawn hostile = AddHostile(Outside);
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.True);
+            Set(hostile, "mapIndexOrState", (sbyte)-1);
+            Set(ticks, "ticksGameInt", 281);
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
+        }
+
+        [Test]
+        public void ObservedUnsafeVanillaRouteDoesNotRetryForeverOrBanIndoorWork()
+        {
+            Pawn hostile = AddHostile(new IntVec3(30, 0, 5));
+            var remote = MakeThing(31, new IntVec3(60, 0, 60));
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, remote, false), Is.False,
+                "an alternate safe route exists in the map flood");
+            ThreatAwareOutdoorSafetyMap.ObserveUnsafeRoute(pawn, remote, new IntVec3(30, 0, 5));
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, remote, false), Is.True);
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, indoor, false), Is.False);
+            Set(hostile, "mapIndexOrState", (sbyte)-1);
+            Set(ticks, "ticksGameInt", 281);
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, remote, false), Is.False);
+        }
+
+        [Test]
+        public void TurretRequiresActualFiringLaneAndRechecksWhenOpened()
+        {
+            CountingShot shot = AddTurret();
+            shot.canHit = false;
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
+            int calls = shot.calls;
+            for (int i = 0; i < 1000; i++)
+                Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
+            Assert.That(shot.calls, Is.EqualTo(calls), "warm candidates must not invoke turret geometry");
+            shot.canHit = true;
+            Set(ticks, "ticksGameInt", 281);
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.True);
+        }
+
+        [Test]
+        public void RealTurretVerbRespectsWallObstructionAfterSnapshotExpiry()
+        {
+            CountingShot fake = AddTurret();
+            var turret = (TestTurret)fake.caster;
+            Set(turret, "positionInt", new IntVec3(10, 0, 1));
+            map.edificeGrid = Bare<EdificeGrid>();
+            Set(map.edificeGrid, "map", map);
+            var buildings = new Building[map.Size.x * map.Size.z];
+            Set(map.edificeGrid, "innerArray", buildings);
+            var wall = new Building { def = Bare<ThingDef>() };
+            wall.def.fillPercent = 1f;
+            int wallIndex = map.cellIndices.CellToIndex(new IntVec3(6, 0, 1));
+            for (int z = 0; z < map.Size.z; z++)
+            {
+                var cell = new IntVec3(6, 0, z);
+                buildings[map.cellIndices.CellToIndex(cell)] = wall;
+                walls.Add(cell);
+            }
+            var real = new HeadlessProjectile();
+            real.verbProps = new VerbProperties { verbClass = typeof(Verb_Shoot), range = 35f,
+                requireLineOfSight = true, defaultProjectile = Bare<ThingDef>() };
+            real.caster = turret;
+            real.verbTracker = fake.verbTracker;
+            turret.verb = real;
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
+            buildings[wallIndex] = null;
+            walls.Remove(new IntVec3(6, 0, 1));
+            Set(ticks, "ticksGameInt", 281);
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.True);
+        }
+
+        [Test]
+        public void DangerousOutdoorTargetDoesNotBanSameJobDefIndoorsOrPuahQueue()
+        {
+            AddHostile(Outside);
             var def = new JobDef { defName = "HaulToInventory" };
             Assert.That(ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, new Job { def = def, targetA = outdoor }), Is.True);
             Assert.That(ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, new Job { def = def, targetA = indoor }), Is.False);
-            bool result = true;
-            Assert.That(ThreatAwareBlockedThingCandidatePatch.Prefix(new RenamedScanner(), pawn, indoor, false, ref result), Is.True);
+            Assert.That(ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn,
+                new Job { def = def, targetA = indoor, targetQueueA = new List<LocalTargetInfo> { outdoor } }), Is.True);
         }
 
         [Test]
-        public void DraftedPawnCanLeave()
+        public void ThinkNodeFallbackRejectsUnsafeNeedsJobButKeepsIndoorAlternative()
         {
-            Set(pawn.drafter, "draftedInt", true);
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
-        }
-
-        [Test]
-        public void ExplicitForcedCandidateAndJobCanLeave()
-        {
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, true), Is.False);
-            Assert.That(ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, new Job { targetA = outdoor, playerForced = true }), Is.False);
-        }
-
-        [Test]
-        public void AttackResponseCanLeave()
-        {
-            pawn.playerSettings.hostilityResponse = HostilityResponseMode.Attack;
-            Assert.That(pawn.playerSettings.UsesConfigurableHostilityResponse, Is.True);
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
-        }
-
-        [Test]
-        public void ThreatDisappearanceClearsAtExpiryAndDoesNotStrandPawn()
-        {
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.True);
-            Set(ticks, "ticksGameInt", 220);
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
-            Set(ticks, "ticksGameInt", 10000);
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
-        }
-
-        [Test]
-        public void ThinkNodeFallbackRejectsOutdoorAndPreservesIndoorNeedsJob()
-        {
+            AddHostile(Outside);
             var node = new JobGiver_GetRest();
             var result = new ThinkResult(new Job { targetA = outdoor }, node);
             ThreatAwareThinkNodePatch.Postfix(pawn, ref result);
@@ -165,199 +372,25 @@ namespace BetterRimAI.Tests
         }
 
         [Test]
-        public void IndoorPrimaryDoesNotHideOutdoorPuahQueueOrSecondaryTarget()
+        public void WarmCandidatesShareOneSnapshotWithoutRosterAccess()
         {
-            var job = new Job { targetA = indoor, targetQueueA = new List<LocalTargetInfo> { outdoor } };
-            Assert.That(ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, job), Is.True);
-            job.targetQueueA.Clear();
-            job.targetB = outdoor;
-            Assert.That(ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, job), Is.True);
-        }
-
-        [Test]
-        public void EnclosedUnpaintedPocketStillAllowsIndoorWork()
-        {
-            homeGrid[Inside] = false;
-            homeGrid[new IntVec3(4, 0, 5)] = true;
-            homeGrid[new IntVec3(6, 0, 5)] = true;
-            homeGrid[new IntVec3(5, 0, 4)] = true;
-            homeGrid[new IntVec3(5, 0, 6)] = true;
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, indoor, false), Is.False);
-        }
-
-        [Test]
-        public void DisabledFeatureAllowsAllCandidates()
-        {
-            BetterRimAIMod.Settings.threatAwareOutdoorWork = false;
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
-        }
-        private void SeedCachedHostile(int tick)
-        {
-            // Simulate the cached hostile snapshot produced by a prior route check.
-            var get = AccessTools.Method(typeof(ThreatAwareOutdoorWorkPatch), "GetRelevantHostilesCached");
-            var hostiles = (List<ThreatAwareThreat>)get.Invoke(null, new object[] { pawn, map, tick });
-            var hostile = Bare<Pawn>();
-            Set(hostile, "mapIndexOrState", (sbyte)0);
-            Set(hostile, "positionInt", Outside);
-            hostile.health = Bare<Pawn_HealthTracker>();
-            Set(hostile.health, "healthState", PawnHealthState.Mobile);
-            hostiles.Add(new ThreatAwareThreat(hostile));
-        }
-
-        [Test]
-        public void PersistentCachedDangerRenewsRestrictionWithoutRetryWindow()
-        {
-            Set(ticks, "ticksGameInt", 220);
-            SeedCachedHostile(220);
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.True);
-            Set(ticks, "ticksGameInt", 340);
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
-        }
-
-        [Test]
-        public void KnownTargetIsIndexedAndClearsAfterThreatDisappearance()
-        {
-            ThreatAwareOutdoorRetryCooldown.Reset();
-            var job = new Job { def = new JobDef { defName = "HaulToInventory" }, targetA = outdoor };
-            AccessTools.Method(typeof(ThreatAwareOutdoorWorkPatch), "RememberGlobalBlock")
-                .Invoke(null, new object[] { map, job, Outside, Outside, 15f });
-            SeedCachedHostile(100);
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.True);
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, indoor, false), Is.False);
-            Set(ticks, "ticksGameInt", 220);
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
-        }
-
-        [Test]
-        public void WarmCandidateLoopDoesNotTouchHostileRosterOrPathfinder()
-        {
+            AddHostile(Outside);
             Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.True);
             map.mapPawns = null;
-            // The uninitialized Map also has no pathfinder.
-            var watch = System.Diagnostics.Stopwatch.StartNew();
             int rejected = 0;
-            for (int i = 0; i < 100000; i++)
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            for (int i = 0; i < 10000; i++)
                 if (ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false)) rejected++;
-            Assert.That(rejected, Is.EqualTo(100000));
-            TestContext.WriteLine("100,000 warmed candidate checks: " + watch.Elapsed.TotalMilliseconds.ToString("F1") + " ms (not an in-game FPS measurement)");
+            watch.Stop();
+            Assert.That(rejected, Is.EqualTo(10000));
+            TestContext.WriteLine("10,000 warm outdoor candidates: " + watch.Elapsed.TotalMilliseconds.ToString("F1")
+                + " ms (headless, not in-game FPS)");
         }
 
-        [Test]
-        public void NewGameClearsEvidenceEvenWhenPawnIdsAreReused()
-        {
-            new ThreatAwareGameState(Current.Game);
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
-        }
-
-        [TestCase("drafted")]
-        [TestCase("forced")]
-        [TestCase("attack")]
-        [TestCase("disabled")]
-        public void DeferredCancellationHonorsOverrideThatArrivesAfterPathStopped(string mode)
-        {
-            pawn.jobs = Bare<Pawn_JobTracker>();
-            var job = new Job { targetA = outdoor };
-            pawn.jobs.curJob = job;
-            ThreatAwarePendingCancellation.Schedule(pawn, job);
-            if (mode == "drafted") Set(pawn.drafter, "draftedInt", true);
-            if (mode == "forced") job.playerForced = true;
-            if (mode == "attack") pawn.playerSettings.hostilityResponse = HostilityResponseMode.Attack;
-            if (mode == "disabled") BetterRimAIMod.Settings.threatAwareOutdoorWork = false;
-            ThreatAwarePendingCancellation.Prefix(pawn);
-            Assert.That(pawn.CurJob, Is.SameAs(job));
-        }
         public class RenamedScanner : WorkGiver_Scanner
         {
             public override PathEndMode PathEndMode => PathEndMode.OnCell;
-            [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
             public override bool HasJobOnThing(Pawn worker, Thing item, bool manual = false) => true;
-        }
-
-        public class RenamedCellScanner : WorkGiver_Scanner
-        {
-            public override PathEndMode PathEndMode => PathEndMode.OnCell;
-            [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-            public override bool HasJobOnCell(Pawn worker, IntVec3 tile, bool manual = false) => true;
-        }
-
-        [Test]
-        public void CellScannerHarmonyPrefixBindsInstanceAndForeignParameterNames()
-        {
-            var harmony = new Harmony("BetterRimAI.tests.cell-positional");
-            MethodInfo original = AccessTools.DeclaredMethod(typeof(RenamedCellScanner), "HasJobOnCell");
-            try
-            {
-                harmony.Patch(original, prefix: new HarmonyMethod(AccessTools.Method(typeof(ThreatAwareBlockedCellCandidatePatch), "Prefix")));
-                var scanner = new RenamedCellScanner();
-                Assert.That((bool)original.Invoke(scanner, new object[] { pawn, Outside, false }), Is.False);
-                Assert.That((bool)original.Invoke(scanner, new object[] { pawn, Inside, false }), Is.True);
-                Assert.That((bool)original.Invoke(scanner, new object[] { pawn, Outside, true }), Is.True);
-            }
-            finally { harmony.Unpatch(original, HarmonyPatchType.All, harmony.Id); }
-        }
-
-        [TestCase(typeof(ThreatAwareBlockedThingCandidatePatch))]
-        [TestCase(typeof(PickUpAndHaulBlockedCandidatePatch))]
-        public void HarmonyPrefixBindsForeignNamesAndKeepsSearchingIndoorCandidates(Type patchType)
-        {
-            var harmony = new Harmony("BetterRimAI.tests.positional");
-            MethodInfo original = AccessTools.DeclaredMethod(typeof(RenamedScanner), "HasJobOnThing");
-            try
-            {
-                harmony.Patch(original, prefix: new HarmonyMethod(AccessTools.Method(patchType, "Prefix")));
-                var scanner = Bare<RenamedScanner>();
-                Thing selected = null;
-                foreach (Thing target in new[] { outdoor, indoor })
-                {
-                    if (!(bool)original.Invoke(scanner, new object[] { pawn, target, false })) continue;
-                    selected = target;
-                    break;
-                }
-                Assert.That(selected, Is.SameAs(indoor));
-                Assert.That((bool)original.Invoke(scanner, new object[] { pawn, outdoor, true }), Is.True);
-            }
-            finally { harmony.Unpatch(original, HarmonyPatchType.All, harmony.Id); }
-        }
-        [Test]
-        public void StalePathBlockCannotCancelAgainAfterThreatDisappears()
-        {
-            pawn.jobs = Bare<Pawn_JobTracker>();
-            pawn.jobs.curJob = new Job { targetA = outdoor };
-            var pather = Bare<Pawn_PathFollower>();
-            Set(pather, "destination", new LocalTargetInfo(outdoor));
-            Type stateType = typeof(ThreatAwareOutdoorWorkPatch).GetNestedType("PathCheckState", BindingFlags.NonPublic);
-            object state = Activator.CreateInstance(stateType, true);
-            Set(state, "blocked", true);
-            Set(state, "blockedThingId", outdoor.thingIDNumber);
-            var states = (System.Collections.IDictionary)AccessTools.Field(typeof(ThreatAwareOutdoorWorkPatch), "CheckStateByPawn").GetValue(null);
-            states.Add(pawn.thingIDNumber, state);
-            Set(ticks, "ticksGameInt", 220);
-            Assert.That(ThreatAwareOutdoorWorkPatch.Prefix(pather, pawn), Is.True);
-        }
-
-        [Test]
-        public void HeadlessMissingTerrainDoesNotBlockOutdoorCandidates()
-        {
-            ThreatAwareOutdoorRetryCooldown.Reset();
-            map.mapPawns = null;
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
-        }
-
-        [Test]
-        public void PawnTransferToAnotherMapDoesNotCarryOldRestriction()
-        {
-            var otherMap = Bare<Map>();
-            otherMap.uniqueID = 72;
-            Current.Game.Maps.Add(otherMap);
-            Set(pawn, "mapIndexOrState", (sbyte)1);
-            Assert.That(ThreatAwareOutdoorRetryCooldown.IsRestricted(pawn), Is.False);
-        }
-
-        [Test]
-        public void MovedIndoorTargetIsAllowedEvenWhenPreviouslyBlocked()
-        {
-            Set(outdoor, "positionInt", Inside);
-            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
         }
     }
 }

@@ -41,6 +41,7 @@ namespace BetterRimAI
                     __instance.PathEndMode == PathEndMode.Touch)) return true;
             __result = null;
             ThreatAwareBlockDiagnostics.Once("candidate-rejected-before-movement", __0, __1, null, true, "JobOnThing");
+            ThreatAwareDecision.SetWorkGiver(__0, __instance.def);
             return false;
         }
         [HarmonyPostfix]
@@ -62,6 +63,7 @@ namespace BetterRimAI
                     __instance.PathEndMode == PathEndMode.Touch)) return true;
             __result = null;
             ThreatAwareBlockDiagnostics.Once("candidate-rejected-before-movement", __0, null, null, true, "JobOnCell");
+            ThreatAwareDecision.SetWorkGiver(__0, __instance.def);
             return false;
         }
         [HarmonyPostfix]

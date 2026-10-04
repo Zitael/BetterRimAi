@@ -16,6 +16,7 @@ namespace BetterRimAI.Tests
         public void RequiredGameMethodsHaveExpectedSignatures()
         {
             Assert.That(AccessTools.Method(typeof(Pawn_PathFollower), "TryEnterNextPathCell"), Is.Not.Null);
+            Assert.That(AccessTools.DeclaredMethod(typeof(Pawn), "GetInspectString"), Is.Not.Null);
             Assert.That(AccessTools.Method(typeof(Pawn_PathFollower), "StartPath"), Is.Not.Null);
             Assert.That(AccessTools.Method(typeof(Pawn_PathFollower), "StartPath", new[] { typeof(LocalTargetInfo), typeof(PathEndMode) }), Is.Not.Null);
             Assert.That(AccessTools.Method(typeof(Pawn_WorkSettings), "get_WorkGiversInOrderNormal"), Is.Not.Null);

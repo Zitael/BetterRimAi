@@ -57,8 +57,11 @@ namespace BetterRimAI
         [HarmonyPrefix]
         internal static void Prefix(Pawn ___pawn, ref LocalTargetInfo __0, ref PathEndMode __1)
         {
-            if (__1 != PathEndMode.Touch || !ThreatAwareOutdoorRetryCooldown.Applies(___pawn, false)
+            if (__1 != PathEndMode.Touch || !ThreatAwareOutdoorPolicy.Applies(___pawn, false)
                 || ___pawn.CurJob == null || ___pawn.CurJob.playerForced) return;
+            Map map = ___pawn.Map;
+            Area_Home home = map?.areaManager?.Home;
+            if (home == null || !ThreatAwareHomeSafety.IsSafeCell(map, home, ___pawn.Position)) return;
             if (ThreatAwareSafeWorkCell.TryFind(___pawn, __0, true, out IntVec3 safe))
             {
                 __0 = safe;

@@ -40,6 +40,7 @@ namespace BetterRimAI
             if (!ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(__0, __1, __2,
                     __instance.PathEndMode == PathEndMode.Touch)) return true;
             ThreatAwareBlockDiagnostics.Once("candidate-rejected-before-movement", __0, __1, null, true, "HasJobOnThing");
+            ThreatAwareDecision.SetWorkGiver(__0, __instance.def);
             __result = false;
             return false;
         }
@@ -57,6 +58,7 @@ namespace BetterRimAI
             if (!ThreatAwareOutdoorWorkPatch.ShouldSuppressCandidate(__0, __1, __2,
                     __instance.PathEndMode == PathEndMode.Touch)) return true;
             ThreatAwareBlockDiagnostics.Once("candidate-rejected-before-movement", __0, null, null, true, "HasJobOnCell");
+            ThreatAwareDecision.SetWorkGiver(__0, __instance.def);
             __result = false;
             return false;
         }

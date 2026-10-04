@@ -1,5 +1,4 @@
 using System;
-using System.Runtime.CompilerServices;
 using RimWorld;
 using Verse;
 using Verse.AI;
@@ -54,49 +53,7 @@ namespace BetterRimAI
             if (attackVerb == null) return distanceSquared <= proximityRadius * proximityRadius;
             if (distanceSquared > rangeSquared) return false;
             // Use the actual verb: range, minimum range and shoot-line/obstruction rules.
-            return ThreatAwareFireCoverage.CanHit(Source, attackVerb, map, cell);
-        }
-    }
-
-    /// <summary>Shared lazy firing geometry. Never called by a warm job-candidate check.</summary>
-    internal static class ThreatAwareFireCoverage
-    {
-        private sealed class Entry
-        {
-            internal Map map;
-            internal Verb verb;
-            internal IntVec3 origin;
-            internal int tick;
-            internal byte[] cells;
-        }
-        private static ConditionalWeakTable<Thing, Entry> Entries = new ConditionalWeakTable<Thing, Entry>();
-        internal static void Reset() => Entries = new ConditionalWeakTable<Thing, Entry>();
-
-        internal static bool CanHit(Thing source, Verb verb, Map map, IntVec3 cell)
-        {
-            if (!cell.InBounds(map)) return false;
-            int tick = Find.TickManager?.TicksGame ?? 0;
-            Entry entry = Entries.GetOrCreateValue(source);
-            int count = map.Size.x * map.Size.z;
-            if (!ReferenceEquals(entry.map, map) || !ReferenceEquals(entry.verb, verb)
-                || entry.origin != source.Position || tick < entry.tick
-                || tick - entry.tick >= ThreatRestriction.RecheckTicks || entry.cells == null || entry.cells.Length != count)
-            {
-                entry.map = map;
-                entry.verb = verb;
-                entry.origin = source.Position;
-                entry.tick = tick;
-                if (entry.cells == null || entry.cells.Length != count) entry.cells = new byte[count];
-                else Array.Clear(entry.cells, 0, entry.cells.Length);
-            }
-            int index = cell.z * map.Size.x + cell.x;
-            byte value = entry.cells[index];
-            if (value == 0)
-            {
-                value = verb.CanHitTargetFrom(source.Position, new LocalTargetInfo(cell)) ? (byte)2 : (byte)1;
-                entry.cells[index] = value;
-            }
-            return value == 2;
+            return attackVerb.CanHitTargetFrom(Source.Position, new LocalTargetInfo(cell));
         }
     }
 }

@@ -9,7 +9,6 @@ namespace BetterRimAI
         public ThreatAwareGameState(Game game)
         {
             ThreatAwareOutdoorWorkPatch.Reset();
-            ThreatAwareOutdoorRetryCooldown.Reset();
             ThreatAwareHomeSafety.Reset();
             ThreatAwarePendingCancellation.Reset();
             ThreatAwareBlockDiagnostics.Reset();

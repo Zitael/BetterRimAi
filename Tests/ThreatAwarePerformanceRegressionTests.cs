@@ -47,15 +47,12 @@ namespace BetterRimAI.Tests
         }
 
         [Test]
-        public void MovingThreatRecheck_IsThrottledByCells()
+        public void ObsoletePerPawnThreatAndCooldownCachesAreRemoved()
         {
-            FieldInfo field = typeof(ThreatAwareOutdoorWorkPatch)
-                .GetField("CellsBetweenThreatChecks", BindingFlags.NonPublic | BindingFlags.Static);
-
-            Assert.That(field, Is.Not.Null);
-            int cells = (int)field.GetRawConstantValue();
-            Assert.That(cells, Is.GreaterThanOrEqualTo(4),
-                "Full route/threat scans must not run on every path cell.");
+            var assembly = typeof(ThreatAwareOutdoorWorkPatch).Assembly;
+            Assert.That(assembly.GetType("BetterRimAI.ThreatAwareOutdoorRetryCooldown"), Is.Null);
+            Assert.That(assembly.GetType("BetterRimAI.ThreatTargetKey"), Is.Null);
+            Assert.That(typeof(ThreatAwareOutdoorWorkPatch).GetField("HostileCache", BindingFlags.NonPublic | BindingFlags.Static), Is.Null);
         }
     }
 }
