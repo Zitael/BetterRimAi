@@ -21,38 +21,62 @@ namespace BetterRimAI
         }
 
         internal static bool Reject(Pawn pawn, LocalTargetInfo target, bool forced, bool safeTouch = false)
+            => Reject(pawn, target, forced, safeTouch, out _);
+
+        internal static bool Reject(Pawn pawn, LocalTargetInfo target, bool forced, bool safeTouch,
+            out string reason)
         {
+            reason = "override or feature disabled";
             if (!Applies(pawn, forced)) return false;
             Map map = pawn.Map;
             Area_Home home = map.areaManager?.Home;
-            if (home == null || !ThreatAwareHomeSafety.IsSafeCell(map, home, pawn.Position)
-                || !target.IsValid || !target.Cell.InBounds(map)
-                || ThreatAwareHomeSafety.IsSafeCell(map, home, target.Cell)) return false;
-            if (safeTouch && ThreatAwareSafeWorkCell.TryFind(pawn, target, false, out _)) return false;
-            if (!ThreatAwareOutdoorSafetyMap.Unsafe(pawn, target, out Thing threat)) return false;
-            ThreatAwareDecision.Remember(pawn, target, threat, "unsafe departure", null);
+            if (home == null || !target.IsValid || !target.Cell.InBounds(map))
+            { reason = "no protected target"; return false; }
+            if (!ThreatAwareHomeSafety.IsSafeCell(map, home, pawn.Position))
+            { reason = "pawn already outside"; return false; }
+            if (ThreatAwareHomeSafety.IsSafeCell(map, home, target.Cell))
+            { reason = "target protected"; return false; }
+            // Actual-route evidence wins over a theoretical protected Touch cell. Vanilla
+            // already chose an exposed approach to this job on a previous attempt.
+            if (ThreatAwareOutdoorSafetyMap.HasObservedRoute(pawn, target, out Thing observedThreat))
+            {
+                reason = "observed unsafe route";
+                ThreatAwareDecision.Remember(pawn, target, observedThreat, reason, null);
+                return true;
+            }
+            if (safeTouch && ThreatAwareSafeWorkCell.TryFind(pawn, target, false, out _))
+            { reason = "protected Touch cell"; return false; }
+            if (!ThreatAwareOutdoorSafetyMap.Unsafe(pawn, target, out Thing threat, out reason)) return false;
+            ThreatAwareDecision.Remember(pawn, target, threat, reason, null);
             return true;
         }
 
         internal static bool Reject(Pawn pawn, Job job, bool safeTouch = false)
+            => Reject(pawn, job, safeTouch, out _);
+
+        internal static bool Reject(Pawn pawn, Job job, bool safeTouch, out string reason)
         {
+            reason = "override or no job";
             if (job == null || !Applies(pawn, job.playerForced)) return false;
             if (!safeTouch && job.workGiverDef?.Worker is WorkGiver_Scanner scanner)
                 safeTouch = scanner.PathEndMode == PathEndMode.Touch;
-            bool rejected = Reject(pawn, job.targetA, false, safeTouch)
-                || Reject(pawn, job.targetB, false)
-                || Reject(pawn, job.targetC, false)
-                || RejectQueue(pawn, job.targetQueueA)
-                || RejectQueue(pawn, job.targetQueueB);
+            bool rejected = Reject(pawn, job.targetA, false, safeTouch, out reason);
+            if (!rejected && job.targetB.IsValid) rejected = Reject(pawn, job.targetB, false, false, out reason);
+            if (!rejected && job.targetC.IsValid) rejected = Reject(pawn, job.targetC, false, false, out reason);
+            if (!rejected && job.targetQueueA != null && job.targetQueueA.Count != 0)
+                rejected = RejectQueue(pawn, job.targetQueueA, out reason);
+            if (!rejected && job.targetQueueB != null && job.targetQueueB.Count != 0)
+                rejected = RejectQueue(pawn, job.targetQueueB, out reason);
             if (rejected) ThreatAwareDecision.SetJob(pawn, job);
             return rejected;
         }
 
-        private static bool RejectQueue(Pawn pawn, List<LocalTargetInfo> queue)
+        private static bool RejectQueue(Pawn pawn, List<LocalTargetInfo> queue, out string reason)
         {
+            reason = "no unsafe queued target";
             if (queue == null) return false;
             for (int i = 0; i < queue.Count; i++)
-                if (Reject(pawn, queue[i], false)) return true;
+                if (Reject(pawn, queue[i], false, false, out reason)) return true;
             return false;
         }
     }
@@ -74,8 +98,19 @@ namespace BetterRimAI
         public static bool CouldBeBlockedThing(Pawn pawn, Thing thing, bool forced, bool safeTouch = false)
             => thing != null && ThreatAwareOutdoorPolicy.Reject(pawn, thing, forced, safeTouch);
 
+        internal static bool CouldBeBlockedThing(Pawn pawn, Thing thing, bool forced, bool safeTouch,
+            out string reason)
+        {
+            reason = "no Thing target";
+            return thing != null && ThreatAwareOutdoorPolicy.Reject(pawn, thing, forced, safeTouch, out reason);
+        }
+
         internal static bool ShouldSuppressCandidate(Pawn pawn, LocalTargetInfo target, bool forced, bool safeTouch = false)
             => ThreatAwareOutdoorPolicy.Reject(pawn, target, forced, safeTouch);
+
+        internal static bool ShouldSuppressCandidate(Pawn pawn, LocalTargetInfo target, bool forced,
+            bool safeTouch, out string reason)
+            => ThreatAwareOutdoorPolicy.Reject(pawn, target, forced, safeTouch, out reason);
 
         public static bool ShouldSuppressWorkJob(Pawn pawn, Job job, bool safeTouch = false)
             => ThreatAwareOutdoorPolicy.Reject(pawn, job, safeTouch);
@@ -108,8 +143,10 @@ namespace BetterRimAI
                     if (!cell.InBounds(map) || ThreatAwareHomeSafety.IsSafeCell(map, home, cell)) continue;
                     if (!ThreatAwareOutdoorSafetyMap.ThreatensCell(pawn, cell, out Thing threat)) continue;
                     Job job = pawn.CurJob;
-                    ThreatAwareOutdoorSafetyMap.ObserveUnsafeRoute(pawn, __instance.Destination, cell);
+                    ThreatAwareOutdoorSafetyMap.ObserveUnsafeJob(pawn, job, __instance.Destination, cell);
                     ThreatAwareDecision.Remember(pawn, cell, threat, "active path exposed", job);
+                    ThreatAwareRuntimeTrace.Guard(pawn, job, __instance.Destination, cell, threat,
+                        "path destination and exterior Job targets");
                     ThreatAwareBlockDiagnostics.Once("active-path-cancelled-safety-net", pawn, threat, job, true);
                     __instance.StopDead();
                     ThreatAwarePendingCancellation.Schedule(pawn, job);

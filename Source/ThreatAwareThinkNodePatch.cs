@@ -37,7 +37,10 @@ namespace BetterRimAI
             if (!__result.IsValid || pawn == null) return;
             Job job = __result.Job;
             if (job == null || job.playerForced) return;
-            if (!ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, job)) return;
+            bool rejected = ThreatAwareOutdoorPolicy.Reject(pawn, job, false, out string reason);
+            ThreatAwareRuntimeTrace.Proposed(pawn, job, __result.SourceNode?.GetType(),
+                "ThinkNode fallback", rejected, reason, false);
+            if (!rejected) return;
             ThreatAwareBlockDiagnostics.Once("candidate-rejected-before-movement", pawn,
                 job.targetA.HasThing ? job.targetA.Thing : null, job, true, "ThinkNode fallback");
             __result = ThinkResult.NoJob;

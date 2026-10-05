@@ -30,6 +30,7 @@ namespace BetterRimAI.Tests
         private static void SetCurrent(Game game) => AccessTools.Field(typeof(Current), "gameInt").SetValue(null, game);
         private static bool Standable(IntVec3 __0, ref bool __result) { __result = !walls.Contains(__0); return false; }
         private static bool False(ref bool __result) { __result = false; return false; }
+        private static bool EmptyVanillaInspect(ref string __result) { __result = string.Empty; return false; }
         private static bool ActiveThreat(IAttackTarget __0, ref bool __result)
         {
             Pawn p = __0?.Thing as Pawn;
@@ -258,7 +259,7 @@ namespace BetterRimAI.Tests
             Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, outdoor, false), Is.False);
             var pather = Bare<Pawn_PathFollower>();
             Assert.That(ThreatAwareOutdoorWorkPatch.Prefix(pather, pawn), Is.True);
-            Assert.That(ThreatAwareDecision.Inspect(pawn), Does.Contain("return toward safety is allowed"));
+            Assert.That(ThreatAwareDecision.Inspect(pawn), Does.Contain("return allowed"));
         }
 
         [Test]
@@ -385,6 +386,86 @@ namespace BetterRimAI.Tests
             Assert.That(rejected, Is.EqualTo(10000));
             TestContext.WriteLine("10,000 warm outdoor candidates: " + watch.Elapsed.TotalMilliseconds.ToString("F1")
                 + " ms (headless, not in-game FPS)");
+        }
+
+        [Test]
+        public void ActualInspectInterfaceAlwaysShowsStatusAndRecentDecision()
+        {
+            var method = AccessTools.DeclaredMethod(typeof(Pawn), nameof(Pawn.GetInspectString));
+            host.Patch(method,
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(CandidateSelectionTests), nameof(EmptyVanillaInspect))),
+                postfix: new HarmonyMethod(AccessTools.Method(typeof(ThreatAwareInspectPatch), nameof(ThreatAwareInspectPatch.Postfix))));
+            Assert.That(((ISelectable)pawn).GetInspectString(), Does.Contain("BetterRimAI: No safety restriction"));
+            ThreatAwareDecision.Remember(pawn, outdoor, null, "observed unsafe route",
+                new Job { def = new JobDef { defName = "Repair" } });
+            string blocked = ((ISelectable)pawn).GetInspectString();
+            Assert.That(blocked, Does.Contain("BetterRimAI: BLOCKED"));
+            Assert.That(blocked, Does.Contain("Job: Repair"));
+            Set(ticks, "ticksGameInt", 3801);
+            Assert.That(((ISelectable)pawn).GetInspectString(), Does.Contain("No safety restriction"));
+        }
+
+        private sealed class TouchThingScanner : WorkGiver_Scanner
+        {
+            public override PathEndMode PathEndMode => PathEndMode.Touch;
+            public override bool HasJobOnThing(Pawn worker, Thing item, bool manual = false) => true;
+        }
+
+        [Test]
+        public void ObservedTouchApproachWithDifferentPathCellIsRejectedOnNextVanillaScan()
+        {
+            PrepareCombatFixture();
+            Thing boundaryWall = MakeThing(51, new IntVec3(6, 0, 5));
+            var scanner = new TouchThingScanner();
+            bool hasJob = true;
+            Assert.That(ThreatAwareBlockedThingCandidatePatch.Prefix(scanner, pawn, boundaryWall, false, ref hasJob), Is.True,
+                "safe-side Touch work is initially eligible");
+            Job firstJob = new Job { def = new JobDef { defName = "Repair" }, targetA = boundaryWall };
+            Assert.That(ThreatAwareOutdoorSafetyMap.ThreatensCell(pawn, Outside, out _), Is.True,
+                "the boundary guard builds the shared threat snapshot before recording evidence");
+            ThreatAwareOutdoorSafetyMap.ObserveUnsafeJob(pawn, firstJob,
+                new IntVec3(7, 0, 5), Outside);
+
+            // Model the next vanilla WorkGiver scan after the path guard cancelled firstJob.
+            // The path's interaction cell differs from the Thing target, as in the real bug.
+            hasJob = true;
+            bool runOriginal = ThreatAwareBlockedThingCandidatePatch.Prefix(scanner, pawn, boundaryWall, false, ref hasJob);
+            Assert.That(runOriginal, Is.False);
+            Assert.That(hasJob, Is.False);
+            Job secondJob = new Job { def = firstJob.def, targetA = boundaryWall };
+            Assert.That(ThreatAwareOutdoorWorkPatch.ShouldSuppressWorkJob(pawn, secondJob, true), Is.True);
+            hasJob = true;
+            Assert.That(ThreatAwareBlockedThingCandidatePatch.Prefix(scanner, pawn, indoor, false, ref hasJob), Is.True);
+            Assert.That(hasJob, Is.True, "vanilla may continue to a safe indoor candidate");
+        }
+
+        [Test]
+        public void ObservedRouteMustOverrideSafeTouchExemption()
+        {
+            PrepareCombatFixture();
+            Thing boundaryWall = MakeThing(53, new IntVec3(6, 0, 5));
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, boundaryWall, false, true), Is.False);
+            Assert.That(ThreatAwareOutdoorSafetyMap.ThreatensCell(pawn, Outside, out _), Is.True);
+            ThreatAwareOutdoorSafetyMap.ObserveUnsafeRoute(pawn, boundaryWall, Outside);
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, boundaryWall, false, true), Is.True,
+                "v2 returned false here because safeTouch preceded observed-route evidence");
+            Assert.That(ThreatAwareOutdoorPolicy.Reject(pawn, boundaryWall, false, true, out string reason), Is.True);
+            Assert.That(reason, Is.EqualTo("observed unsafe route"));
+        }
+
+        [Test]
+        public void ObservedExteriorJobTargetSurvivesPathDestinationMismatchUntilThreatClears()
+        {
+            Pawn hostile = AddHostile(new IntVec3(30, 0, 5));
+            Thing target = MakeThing(52, new IntVec3(60, 0, 60));
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, target, false), Is.False);
+            var job = new Job { targetA = target };
+            ThreatAwareOutdoorSafetyMap.ObserveUnsafeJob(pawn, job,
+                new IntVec3(31, 0, 5), new IntVec3(30, 0, 5));
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, target, false), Is.True);
+            Set(hostile, "mapIndexOrState", (sbyte)-1);
+            Set(ticks, "ticksGameInt", 281);
+            Assert.That(ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(pawn, target, false), Is.False);
         }
 
         public class RenamedScanner : WorkGiver_Scanner

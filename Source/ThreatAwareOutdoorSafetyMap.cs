@@ -39,21 +39,42 @@ namespace BetterRimAI
         }
 
         internal static bool Unsafe(Pawn pawn, LocalTargetInfo target, out Thing threat)
+            => Unsafe(pawn, target, out threat, out _);
+
+        internal static bool Unsafe(Pawn pawn, LocalTargetInfo target, out Thing threat, out string reason)
+        {
+            threat = null;
+            reason = "snapshot unavailable";
+            Map map = pawn?.Map;
+            Area_Home home = map?.areaManager?.Home;
+            if (home == null || !target.IsValid || !target.Cell.InBounds(map)
+                || map.terrainGrid == null) return false;
+            Snapshot snapshot = Get(pawn, map, home);
+            if (!snapshot.hasDanger) { reason = "no active threats"; return false; }
+            int index = Index(snapshot, target.Cell);
+            if (snapshot.observedRoutes.ContainsKey(index))
+            {
+                reason = "observed unsafe route";
+                threat = snapshot.threats.Count == 0 ? null : snapshot.threats[0].Source;
+                return true;
+            }
+            if (snapshot.reachable[index] != 0) { reason = "cached safe route"; return false; }
+            reason = "no safe route through danger snapshot";
+            threat = snapshot.threats.Count == 0 ? null : snapshot.threats[0].Source;
+            return true;
+        }
+
+        internal static bool HasObservedRoute(Pawn pawn, LocalTargetInfo target, out Thing threat)
         {
             threat = null;
             Map map = pawn?.Map;
             Area_Home home = map?.areaManager?.Home;
             if (home == null || !target.IsValid || !target.Cell.InBounds(map)
                 || map.terrainGrid == null) return false;
+            if (!snapshots.TryGetValue(map, out Snapshot existing) || existing.observedRoutes.Count == 0)
+                return false;
             Snapshot snapshot = Get(pawn, map, home);
-            if (!snapshot.hasDanger) return false;
-            int index = Index(snapshot, target.Cell);
-            if (snapshot.observedRoutes.ContainsKey(index))
-            {
-                threat = snapshot.threats.Count == 0 ? null : snapshot.threats[0].Source;
-                return true;
-            }
-            if (snapshot.reachable[index] != 0) return false;
+            if (!snapshot.hasDanger || !snapshot.observedRoutes.ContainsKey(Index(snapshot, target.Cell))) return false;
             threat = snapshot.threats.Count == 0 ? null : snapshot.threats[0].Source;
             return true;
         }
@@ -78,6 +99,30 @@ namespace BetterRimAI
             Snapshot snapshot = snapshots.GetOrCreateValue(map);
             if (snapshot.width != map.Size.x || snapshot.height != map.Size.z) return;
             snapshot.observedRoutes[Index(snapshot, destination.Cell)] = Index(snapshot, dangerCell);
+        }
+
+        internal static void ObserveUnsafeJob(Pawn pawn, Job job, LocalTargetInfo pathDestination, IntVec3 dangerCell)
+        {
+            ObserveUnsafeRoute(pawn, pathDestination, dangerCell);
+            if (job == null) return;
+            ObserveOutdoorTarget(pawn, job.targetA, dangerCell);
+            ObserveOutdoorTarget(pawn, job.targetB, dangerCell);
+            ObserveOutdoorTarget(pawn, job.targetC, dangerCell);
+            if (job.targetQueueA != null)
+                for (int i = 0; i < job.targetQueueA.Count; i++)
+                    ObserveOutdoorTarget(pawn, job.targetQueueA[i], dangerCell);
+            if (job.targetQueueB != null)
+                for (int i = 0; i < job.targetQueueB.Count; i++)
+                    ObserveOutdoorTarget(pawn, job.targetQueueB[i], dangerCell);
+        }
+
+        private static void ObserveOutdoorTarget(Pawn pawn, LocalTargetInfo target, IntVec3 dangerCell)
+        {
+            Map map = pawn?.Map;
+            Area_Home home = map?.areaManager?.Home;
+            if (home != null && target.IsValid && target.Cell.InBounds(map)
+                && !ThreatAwareHomeSafety.IsSafeCell(map, home, target.Cell))
+                ObserveUnsafeRoute(pawn, target, dangerCell);
         }
 
         private static Snapshot Get(Pawn pawn, Map map, Area_Home home)

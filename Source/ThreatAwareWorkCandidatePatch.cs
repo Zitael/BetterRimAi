@@ -37,10 +37,13 @@ namespace BetterRimAI
         [HarmonyPrefix]
         public static bool Prefix(WorkGiver_Scanner __instance, Pawn __0, Thing __1, bool __2, ref bool __result)
         {
+            bool safeTouch = __instance.PathEndMode == PathEndMode.Touch;
             if (!ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(__0, __1, __2,
-                    __instance.PathEndMode == PathEndMode.Touch)) return true;
+                    safeTouch, out string reason)) return true;
             ThreatAwareBlockDiagnostics.Once("candidate-rejected-before-movement", __0, __1, null, true, "HasJobOnThing");
             ThreatAwareDecision.SetWorkGiver(__0, __instance.def);
+            ThreatAwareRuntimeTrace.CandidateRejected(__0, "HasJobOnThing", __1,
+                __instance.def?.defName, safeTouch, reason);
             __result = false;
             return false;
         }
@@ -55,10 +58,13 @@ namespace BetterRimAI
         [HarmonyPrefix]
         public static bool Prefix(WorkGiver_Scanner __instance, Pawn __0, IntVec3 __1, bool __2, ref bool __result)
         {
+            bool safeTouch = __instance.PathEndMode == PathEndMode.Touch;
             if (!ThreatAwareOutdoorWorkPatch.ShouldSuppressCandidate(__0, __1, __2,
-                    __instance.PathEndMode == PathEndMode.Touch)) return true;
+                    safeTouch, out string reason)) return true;
             ThreatAwareBlockDiagnostics.Once("candidate-rejected-before-movement", __0, null, null, true, "HasJobOnCell");
             ThreatAwareDecision.SetWorkGiver(__0, __instance.def);
+            ThreatAwareRuntimeTrace.CandidateRejected(__0, "HasJobOnCell", __1,
+                __instance.def?.defName, safeTouch, reason);
             __result = false;
             return false;
         }

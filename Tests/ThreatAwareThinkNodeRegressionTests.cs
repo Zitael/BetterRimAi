@@ -35,7 +35,7 @@ namespace BetterRimAI.Tests
         public void BlockedThinkResult_IsConvertedToNoJob_SoPriorityTreeCanContinue()
         {
             string source = File.ReadAllText(SourcePath("ThreatAwareThinkNodePatch.cs"));
-            Assert.That(source, Does.Contain("ShouldSuppressWorkJob(pawn, job)"));
+            Assert.That(source, Does.Contain("ThreatAwareOutdoorPolicy.Reject(pawn, job"));
             Assert.That(source, Does.Contain("__result = ThinkResult.NoJob"),
                 "Regression: cancelling after job start loops; filtering to NoJob lets parent ThinkNode try siblings such as sleep.");
         }
@@ -45,7 +45,7 @@ namespace BetterRimAI.Tests
         {
             string source = File.ReadAllText(SourcePath("ThreatAwareThinkNodePatch.cs"));
             int forcedGuard = source.IndexOf("job.playerForced", StringComparison.Ordinal);
-            int suppression = source.IndexOf("ShouldSuppressWorkJob", StringComparison.Ordinal);
+            int suppression = source.IndexOf("ThreatAwareOutdoorPolicy.Reject", StringComparison.Ordinal);
             Assert.That(forcedGuard, Is.GreaterThanOrEqualTo(0));
             Assert.That(suppression, Is.GreaterThan(forcedGuard),
                 "playerForced must bypass autonomous threat suppression.");

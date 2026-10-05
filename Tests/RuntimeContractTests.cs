@@ -27,6 +27,37 @@ namespace BetterRimAI.Tests
                 Assert.That(AccessTools.DeclaredMethod(typeof(WorkGiver_Scanner), name,
                     new[] { typeof(Pawn), name.EndsWith("Thing") ? typeof(Thing) : typeof(IntVec3), typeof(bool) }), Is.Not.Null, name);
             Assert.That(ThreatAwarePendingCancellation.TargetMethods().Count(), Is.EqualTo(2));
+            MethodInfo startJob = AccessTools.DeclaredMethod(typeof(Pawn_JobTracker), nameof(Pawn_JobTracker.StartJob));
+            Assert.That(startJob, Is.Not.Null);
+            Assert.That(startJob.GetParameters()[0].ParameterType, Is.EqualTo(typeof(Job)));
+            Assert.That(startJob.GetParameters()[2].ParameterType, Is.EqualTo(typeof(ThinkNode)));
+        }
+
+        [Test]
+        public void SelectedPawnInspectPaneCallsThePatchedPawnMethodThroughISelectable()
+        {
+            InterfaceMapping mapping = typeof(Pawn).GetInterfaceMap(typeof(ISelectable));
+            int slot = Array.FindIndex(mapping.InterfaceMethods, method => method.Name == nameof(ISelectable.GetInspectString));
+            Assert.That(slot, Is.GreaterThanOrEqualTo(0));
+            Assert.That(mapping.TargetMethods[slot].DeclaringType, Is.EqualTo(typeof(Pawn)));
+
+            MethodInfo drawer = AccessTools.DeclaredMethod(typeof(InspectPaneFiller), "DrawInspectStringFor",
+                new[] { typeof(ISelectable), typeof(UnityEngine.Rect) });
+            Assert.That(drawer, Is.Not.Null);
+            byte[] il = drawer.GetMethodBody().GetILAsByteArray();
+            bool callsInspect = false;
+            for (int i = 0; i < il.Length - 4; i++)
+            {
+                if (il[i] != 0x28 && il[i] != 0x6f) continue;
+                try
+                {
+                    MethodBase called = drawer.Module.ResolveMethod(BitConverter.ToInt32(il, i + 1));
+                    if (called.DeclaringType == typeof(ISelectable)
+                        && called.Name == nameof(ISelectable.GetInspectString)) callsInspect = true;
+                }
+                catch (ArgumentException) { }
+            }
+            Assert.That(callsInspect, Is.True, "RimWorld's selected-object inspect pane must read ISelectable.GetInspectString");
         }
 
         [Test]

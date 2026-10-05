@@ -32,10 +32,15 @@ namespace BetterRimAI
             if (pawn == null || !pending.TryGetValue(pawn, out Job oldJob)) return;
             pending.Remove(pawn);
             Job current = pawn.CurJob;
-            if (current == null || !ThreatAwareOutdoorPolicy.Applies(pawn, current.playerForced)) return;
+            if (current == null) { ThreatAwareRuntimeTrace.CancelSkipped(pawn, null, "no current job"); return; }
+            if (!ThreatAwareOutdoorPolicy.Applies(pawn, current.playerForced))
+            { ThreatAwareRuntimeTrace.CancelSkipped(pawn, current, "override or disabled"); return; }
             Area_Home home = pawn.Map?.areaManager?.Home;
-            if (home == null || !ThreatAwareHomeSafety.IsSafeCell(pawn.Map, home, pawn.Position)) return;
-            if (!ReferenceEquals(current, oldJob) && !ThreatAwareOutdoorPolicy.Reject(pawn, current)) return;
+            if (home == null || !ThreatAwareHomeSafety.IsSafeCell(pawn.Map, home, pawn.Position))
+            { ThreatAwareRuntimeTrace.CancelSkipped(pawn, current, "pawn outside protected area"); return; }
+            if (!ReferenceEquals(current, oldJob) && !ThreatAwareOutdoorPolicy.Reject(pawn, current))
+            { ThreatAwareRuntimeTrace.CancelSkipped(pawn, current, "safe replacement job"); return; }
+            ThreatAwareRuntimeTrace.Cancelled(pawn, current, ReferenceEquals(current, oldJob));
             pawn.jobs.EndCurrentJob(JobCondition.Incompletable, startNewJob: true);
         }
     }

@@ -27,9 +27,11 @@ namespace BetterRimAI
         [HarmonyPrefix]
         public static bool Prefix(Pawn __0, Thing __1, bool __2, ref bool __result)
         {
-            if (!ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(__0, __1, __2)) return true;
+            if (!ThreatAwareOutdoorWorkPatch.CouldBeBlockedThing(__0, __1, __2, false, out string reason)) return true;
             __result = false;
             ThreatAwareBlockDiagnostics.Once("puah-rejected", __0, __1, null, true, "candidate rejected before movement");
+            ThreatAwareRuntimeTrace.CandidateRejected(__0, "PUAH HasJobOnThing", __1,
+                "PickUpAndHaul.WorkGiver_HaulToInventory", false, reason);
             return false;
         }
     }
