@@ -29,6 +29,7 @@ namespace BetterRimAI.RimWorldTests
 
         internal HeadlessColony()
         {
+            LogCapture.Clear();
             previousGame = Current.Game;
             previousSettings = BetterRimAIMod.Settings;
             Game = Bare<Game>();

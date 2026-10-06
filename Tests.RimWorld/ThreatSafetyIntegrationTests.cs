@@ -107,6 +107,33 @@ namespace BetterRimAI.RimWorldTests
         }
 
         [Test]
+        public void NoThreat_SnapshotRefreshSucceedsWithoutFailingOpen()
+        {
+            // The snapshot fails open (inactive + one logged error) when its refresh throws. The
+            // no-threat invariant must hold because nothing is hostile, not because of that.
+            // Each vanilla dependency is checked separately so a failure names its cause.
+            var colony = new HeadlessColony();
+            try
+            {
+                Faction player = null;
+                Assert.DoesNotThrow(() => player = Faction.OfPlayer, "vanilla Faction.OfPlayer in the fixture");
+                Assert.That(player, Is.SameAs(colony.Player));
+                HashSet<IAttackTarget> hostiles = null;
+                Assert.DoesNotThrow(() => hostiles = colony.Map.attackTargetsCache.TargetsHostileToColony,
+                    "vanilla AttackTargetsCache.TargetsHostileToColony in the fixture");
+                Assert.That(hostiles, Is.Empty);
+                LogCapture.AssertNoErrors("the vanilla hostile-target lookup");
+
+                MapThreatState state = MapThreatState.For(colony.Map);
+                Assert.That(state.Active, Is.False);
+                Assert.That(state.ThreatCount, Is.EqualTo(0));
+                Assert.That(state.Walkable, Is.Null, "no grids are built without a threat");
+                LogCapture.AssertNoErrors("the no-threat snapshot refresh");
+            }
+            finally { colony.Dispose(); }
+        }
+
+        [Test]
         public void NoThreat_FilterIsAPlainVanillaCall_AndNoRestrictionOpens()
         {
             var colony = new HeadlessColony();
@@ -131,6 +158,7 @@ namespace BetterRimAI.RimWorldTests
                     Assert.That(lastThing, Is.SameAs(wall));
                     Assert.That(lastForced, Is.False);
                 }
+                LogCapture.AssertNoErrors("the no-threat pass-through");
             }
             finally
             {
@@ -154,6 +182,7 @@ namespace BetterRimAI.RimWorldTests
                 SafeSidePathPatch.Prefix(pawn, ref dest, ref mode);
                 Assert.That(dest.Cell, Is.EqualTo(new IntVec3(6, 0, 6)));
                 Assert.That(mode, Is.EqualTo(PathEndMode.Touch));
+                LogCapture.AssertNoErrors("the no-threat StartPath check");
             }
             finally { colony.Dispose(); }
         }
