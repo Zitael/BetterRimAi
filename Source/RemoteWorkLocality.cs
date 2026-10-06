@@ -38,11 +38,10 @@ namespace BetterRimAI
                 || job == null || job.playerForced || job.workGiverDef == null) return;
             if (!(job.workGiverDef.Worker is WorkGiver_Scanner)) return;
             Map map = pawn.Map;
-            Area_Home home = map.areaManager?.Home;
-            if (home == null || !job.targetA.IsValid) return;
+            if (map.areaManager?.Home == null || !job.targetA.IsValid) return;
             IntVec3 destination = job.targetA.Cell;
-            if (!destination.InBounds(map) || ThreatAwareHomeSafety.IsSafeCell(map, home, destination)) return;
-            bool startedAtBase = ThreatAwareHomeSafety.IsSafeCell(map, home, pawn.Position)
+            if (!destination.InBounds(map) || ProtectedArea.IsProtected(map, destination)) return;
+            bool startedAtBase = ProtectedArea.IsProtected(map, pawn.Position)
                 && (destination - pawn.Position).LengthHorizontalSquared >= LongTripNeedsPatch.LongTripDistanceSquared;
             bool continuing = entries.TryGetValue(pawn, out Entry previous) && previous.map == map
                 && previous.giver == job.workGiverDef && (pawn.Position - previous.site).LengthHorizontalSquared <= SiteRadiusSquared
@@ -161,33 +160,6 @@ namespace BetterRimAI
             => RemoteWorkLocality.Prefer(__instance, ref __result);
     }
 
-    [HarmonyPatch]
-    internal static class RemoteWorkThingCandidatePatch
-    {
-        [HarmonyTargetMethods]
-        internal static IEnumerable<System.Reflection.MethodBase> TargetMethods()
-            => ThreatAwareScannerTargets.Find(nameof(WorkGiver_Scanner.HasJobOnThing), typeof(Thing));
-        [HarmonyPrefix]
-        internal static bool Prefix(WorkGiver_Scanner __instance, Pawn __0, Thing __1, ref bool __result)
-        {
-            if (!RemoteWorkLocality.CandidateIsTooFar(__instance, __0, __1.Position)) return true;
-            __result = false;
-            return false;
-        }
-    }
-
-    [HarmonyPatch]
-    internal static class RemoteWorkCellCandidatePatch
-    {
-        [HarmonyTargetMethods]
-        internal static IEnumerable<System.Reflection.MethodBase> TargetMethods()
-            => ThreatAwareScannerTargets.Find(nameof(WorkGiver_Scanner.HasJobOnCell), typeof(IntVec3));
-        [HarmonyPrefix]
-        internal static bool Prefix(WorkGiver_Scanner __instance, Pawn __0, IntVec3 __1, ref bool __result)
-        {
-            if (!RemoteWorkLocality.CandidateIsTooFar(__instance, __0, __1)) return true;
-            __result = false;
-            return false;
-        }
-    }
+    // Candidate filtering (CandidateIsTooFar) runs through WorkScanFilter, which wraps
+    // JobGiver_Work's own HasJobOnThing/HasJobOnCell calls; no per-scanner patches.
 }

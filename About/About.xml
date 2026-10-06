@@ -17,5 +17,5 @@
   <loadAfter>
     <li>brrainz.harmony</li>
   </loadAfter>
-  <description>Improves pawn decision-making around expensive long-distance work trips. Version 0.1 prevents colonists from starting work more than 50 cells away when food or rest is already close to forcing an immediate return trip.</description>
+  <description>Small, conservative improvements to vanilla pawn work decisions: no long work trips right before food/rest runs out, no autonomous work that walks out of the base into an active threat (with no effect at all when there is no threat), and a preference for nearby work at remote work sites.</description>
 </ModMetaData>

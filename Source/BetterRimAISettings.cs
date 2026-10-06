@@ -5,18 +5,18 @@ namespace BetterRimAI
 {
     public sealed class BetterRimAISettings : ModSettings
     {
+        internal const float DefaultThreatRadius = 18f;
+
         public bool threatAwareOutdoorWork = true;
-        public float routeThreatRadius = 15f;
-        public float homeExitThreatRadius = 20f;
-        public bool threatDebugLogging = true;
+        public float threatRadius = DefaultThreatRadius;
+        public bool threatDebugLogging = false;
         public bool remoteWorkLocality = true;
 
         public override void ExposeData()
         {
             Scribe_Values.Look(ref threatAwareOutdoorWork, "threatAwareOutdoorWork", true);
-            Scribe_Values.Look(ref routeThreatRadius, "routeThreatRadius", 15f);
-            Scribe_Values.Look(ref homeExitThreatRadius, "homeExitThreatRadius", 20f);
-            Scribe_Values.Look(ref threatDebugLogging, "threatDebugLogging", true);
+            Scribe_Values.Look(ref threatRadius, "threatRadius", DefaultThreatRadius);
+            Scribe_Values.Look(ref threatDebugLogging, "threatDebugLogging", false);
             Scribe_Values.Look(ref remoteWorkLocality, "remoteWorkLocality", true);
             base.ExposeData();
         }
@@ -42,25 +42,20 @@ namespace BetterRimAI
             listing.Begin(inRect);
 
             listing.CheckboxLabeled(
-                "Threat-aware outdoor work",
+                "Don't leave the base for work during threats",
                 ref Settings.threatAwareOutdoorWork,
-                "Colonists with Flee/Ignore hostility response will avoid automatic jobs outside the Home area when their actual route passes close to hostiles. Drafted, player-forced and Attack-response pawns are not restricted.");
+                "While an active hostile threat makes the outside unsafe, colonists and player mechs inside the Home area do not pick autonomous work that requires stepping into that danger. Work that can be done from inside (for example repairing an outer wall from the inside) stays available. Pawns already outside, drafted pawns, direct orders and Attack-response colonists are never restricted. With no active threat this does nothing.");
 
             listing.GapLine();
-            listing.Label($"Route threat radius: {Settings.routeThreatRadius:F0} cells");
-            Settings.routeThreatRadius = listing.Slider(Settings.routeThreatRadius, 5f, 40f);
-            listing.Label("How close a hostile may be to the calculated route before the outdoor job is blocked.");
-
-            listing.Gap();
-            listing.Label($"Home exit threat radius: {Settings.homeExitThreatRadius:F0} cells");
-            Settings.homeExitThreatRadius = listing.Slider(Settings.homeExitThreatRadius, 5f, 40f);
-            listing.Label("Extra safety radius around the point where the route leaves the Home area. This prevents pawns opening a base exit next to raiders, manhunters or shamblers.");
+            listing.Label($"Hostile danger radius: {Settings.threatRadius:F0} cells");
+            Settings.threatRadius = listing.Slider(Settings.threatRadius, 6f, 40f);
+            listing.Label("Walking distance around an active hostile that counts as unsafe. Walls and closed doors stop it. Hostile turrets use their real firing lanes instead.");
 
             listing.Gap();
             listing.CheckboxLabeled(
                 "Debug threat decisions",
                 ref Settings.threatDebugLogging,
-                "Writes throttled BetterRimAI threat decisions to the RimWorld log.");
+                "Logs threat state changes, rejected candidates, safe-side paths, and one line per job started by the selected pawn showing whether BetterRimAI changed it.");
 
             listing.GapLine();
             listing.CheckboxLabeled(
