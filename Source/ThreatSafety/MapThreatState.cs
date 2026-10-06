@@ -137,7 +137,17 @@ namespace BetterRimAI
             ThreatCount = 0;
             HashSet<IAttackTarget> hostiles = Map.attackTargetsCache?.TargetsHostileToColony;
             if (hostiles == null || hostiles.Count == 0) return false;
+            return RebuildWithHostiles(hostiles, tick);
+        }
 
+        /// <summary>
+        /// Everything past the empty-hostile-set check. Kept in its own method so the no-threat
+        /// refresh compiles and touches only the lookup above; the threat, door, path-grid and
+        /// verb types are first needed here.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private bool RebuildWithHostiles(HashSet<IAttackTarget> hostiles, int tick)
+        {
             foreach (IAttackTarget target in hostiles)
             {
                 Thing thing = target?.Thing;

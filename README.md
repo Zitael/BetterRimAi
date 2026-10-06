@@ -105,7 +105,10 @@ dotnet test .\Tests.RimWorld\BetterRimAI.RimWorldTests.csproj -c Release -p:RimW
 ```
 
 Neither project simulates a running colony; the job lifecycle (job drivers, pathing,
-think tree) is covered by the manual checklist in `docs/threat-safety.md`.
+think tree) is covered by the manual checklist in `docs/threat-safety.md`. `Tests.RimWorld`
+runs on .NET Framework, which cannot load some RimWorld types that Unity's Mono accepts; the
+active-threat snapshot is reported as inconclusive there when that happens and is validated
+in game.
 
 ## Install locally
 

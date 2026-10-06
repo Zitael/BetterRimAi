@@ -1,7 +1,9 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
 using HarmonyLib;
 using NUnit.Framework;
 using RimWorld;
@@ -104,6 +106,54 @@ namespace BetterRimAI.RimWorldTests
             lastForced = __2;
             __result = scannerAnswer;
             return false;
+        }
+
+        /// <summary>
+        /// RimWorld runs on Unity's Mono, which accepts interface members that .NET Framework
+        /// refuses to load ("Non-abstract, non-.cctor method in an interface"). Lists every
+        /// Assembly-CSharp type this runner cannot load, and proves none of them is needed by the
+        /// no-threat refresh.
+        /// </summary>
+        [Test]
+        public void RunnerTypeLoad_NoThreatRefreshNeedsNoUnloadableType()
+        {
+            var unloadable = new List<string>();
+            try { typeof(Pawn).Assembly.GetTypes(); }
+            catch (ReflectionTypeLoadException ex)
+            {
+                foreach (Exception e in ex.LoaderExceptions)
+                    unloadable.Add(e is TypeLoadException tle ? tle.TypeName + ": " + tle.Message : e?.GetType().Name + ": " + e?.Message);
+            }
+            TestContext.WriteLine("Assembly-CSharp types this runner cannot load (" + unloadable.Count + "):");
+            foreach (string u in unloadable.Distinct()) TestContext.WriteLine("  " + u);
+
+            Type[] noThreatPath = { typeof(Map), typeof(AttackTargetsCache), typeof(IAttackTarget), typeof(Faction),
+                typeof(FactionManager), typeof(TickManager), typeof(Find) };
+            foreach (Type t in noThreatPath)
+                Assert.That(unloadable.Any(u => u.StartsWith(t.FullName + ":")), Is.False, t.FullName);
+            foreach (string name in new[] { nameof(MapThreatState.For), "RefreshIfStale", "Rebuild" })
+            {
+                MethodInfo m = AccessTools.Method(typeof(MapThreatState), name);
+                Assert.DoesNotThrow(() => RuntimeHelpers.PrepareMethod(m.MethodHandle), "JIT of MapThreatState." + name);
+            }
+        }
+
+        /// <summary>
+        /// The active-threat snapshot uses vanilla types (verbs, doors, path grid, hostility) that
+        /// may not load under .NET Framework. When they don't, this is reported as inconclusive:
+        /// that code needs in-game validation (manual checklist C-K), not a headless green.
+        /// </summary>
+        [Test]
+        public void ActiveThreatSnapshot_CompilesUnderThisRunner_OrNeedsInGameValidation()
+        {
+            MethodInfo m = AccessTools.Method(typeof(MapThreatState), "RebuildWithHostiles");
+            Assert.That(m, Is.Not.Null);
+            try { RuntimeHelpers.PrepareMethod(m.MethodHandle); }
+            catch (TypeLoadException ex)
+            {
+                Assert.Inconclusive("The active-threat snapshot cannot be compiled outside RimWorld's Mono runtime (" +
+                                    ex.TypeName + ": " + ex.Message + "). Validate it in game with the manual checklist.");
+            }
         }
 
         [Test]
